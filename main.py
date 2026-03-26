@@ -27,22 +27,86 @@ database_url = os.getenv("DATABASE_URL")
 
 SESSION_STATE = {}
 
-HFJ_PAGE_SOURCES = [
-    "https://hopeforjustice.org/human-trafficking/",
-    "https://hopeforjustice.org/spot-the-signs/",
-    "https://hopeforjustice.org/get-help/",
-    "https://hopeforjustice.org/contact/",
-    "https://hopeforjustice.org/resources-and-statistics/",
-    "https://hopeforjustice.org/resources-and-statistics/spot-the-signs-resources/",
+CONTENT_SOURCES = [
+    {
+        "url": "https://hopeforjustice.org/human-trafficking/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "education",
+    },
+    {
+        "url": "https://hopeforjustice.org/spot-the-signs/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "education",
+    },
+    {
+        "url": "https://hopeforjustice.org/get-help/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "support",
+    },
+    {
+        "url": "https://hopeforjustice.org/contact/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "support",
+    },
+    {
+        "url": "https://hopeforjustice.org/resources-and-statistics/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "resource",
+    },
+    {
+        "url": "https://hopeforjustice.org/resources-and-statistics/spot-the-signs-resources/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "resource",
+    },
+    {
+        "url": "https://www2.hse.ie/services/human-trafficking/",
+        "source_site": "hse",
+        "region": "ireland",
+        "content_type": "support",
+    },
+    {
+        "url": "https://www2.hse.ie/services/domestic-sexual-gender-based-violence/",
+        "source_site": "hse",
+        "region": "ireland",
+        "content_type": "support",
+    },
+    {
+        "url": "https://www.modernslavery.gov.uk/",
+        "source_site": "modernslavery_uk",
+        "region": "uk",
+        "content_type": "reporting",
+    },
+    {
+        "url": "https://www.modernslavery.gov.uk/prompt-sheet-for-working-offline",
+        "source_site": "modernslavery_uk",
+        "region": "uk",
+        "content_type": "reporting",
+    },
 ]
 
-USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.0)"
+USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.1)"
 
-
-class ChatRequest(BaseModel):
-    message: str
-    session_id: str | None = None
-
+JUNK_PATTERNS = [
+    "out of date browser",
+    "update your browser",
+    "we use cookies",
+    "privacy policy",
+    "cookie settings",
+    "accept cookies",
+    "terms and conditions",
+    "all rights reserved",
+    "skip to content",
+    "manage consent",
+    "close this notice",
+    "phone this field is for validation purposes",
+    "sign up to our email updates",
+]
 
 US_STATES = {
     "alabama": "Alabama",
@@ -152,19 +216,10 @@ STATE_ABBREVIATIONS = {
     "dc": "District of Columbia",
 }
 
-JUNK_PATTERNS = [
-    "out of date browser",
-    "update your browser",
-    "we use cookies",
-    "privacy policy",
-    "cookie settings",
-    "accept cookies",
-    "terms and conditions",
-    "all rights reserved",
-    "skip to content",
-    "manage consent",
-    "close this notice",
-]
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str | None = None
 
 
 def get_db_connection():
@@ -186,7 +241,6 @@ def normalize_whitespace(text: str) -> str:
 
 def normalize_country_key(name: str) -> str:
     name = name.lower().strip()
-
     mapping = {
         "uk": "uk",
         "united kingdom": "uk",
@@ -202,7 +256,6 @@ def normalize_country_key(name: str) -> str:
         "united states": "united_states",
         "united states of america": "united_states",
     }
-
     return mapping.get(name, name.replace(" ", "_"))
 
 
@@ -329,11 +382,13 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS hfj_content_chunks (
                     id BIGSERIAL PRIMARY KEY,
                     source_url TEXT NOT NULL,
+                    source_site TEXT NOT NULL,
+                    region TEXT NOT NULL DEFAULT 'global',
+                    content_type TEXT NOT NULL DEFAULT 'education',
                     page_title TEXT NOT NULL,
                     chunk_index INTEGER NOT NULL,
                     section_heading TEXT,
                     content TEXT NOT NULL,
-                    content_type TEXT NOT NULL DEFAULT 'education',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE(source_url, chunk_index)
                 )
@@ -428,7 +483,7 @@ def chunk_text(text: str, max_chars: int = 1200) -> list[str]:
     return chunks
 
 
-def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
+def parse_page(html: str, url: str, source_site: str, region: str, content_type: str) -> tuple[str, list[dict]]:
     soup = BeautifulSoup(html, "lxml")
 
     for tag in soup(["script", "style", "noscript", "iframe", "svg", "form"]):
@@ -439,9 +494,10 @@ def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
             tag.decompose()
 
     main_content = soup.find("main")
-    root = main_content if main_content else soup
+    article_content = soup.find("article")
+    root = article_content or main_content or soup
 
-    page_title = "Hope for Justice"
+    page_title = "Content"
     h1 = root.find("h1")
     if h1:
         page_title = normalize_whitespace(h1.get_text(" ", strip=True))
@@ -462,6 +518,9 @@ def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
             sections.append(
                 {
                     "source_url": url,
+                    "source_site": source_site,
+                    "region": region,
+                    "content_type": content_type,
                     "page_title": page_title,
                     "section_heading": current_heading,
                     "content": chunk,
@@ -488,7 +547,7 @@ def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
     return page_title, sections
 
 
-def upsert_hfj_sections(sections: list[dict]) -> int:
+def upsert_sections(sections: list[dict]) -> int:
     if not sections:
         return 0
 
@@ -497,11 +556,13 @@ def upsert_hfj_sections(sections: list[dict]) -> int:
         rows.append(
             (
                 section["source_url"],
+                section["source_site"],
+                section["region"],
+                section["content_type"],
                 section["page_title"],
                 idx,
                 section["section_heading"],
                 section["content"],
-                "education",
             )
         )
 
@@ -515,8 +576,8 @@ def upsert_hfj_sections(sections: list[dict]) -> int:
             cur.executemany(
                 """
                 INSERT INTO hfj_content_chunks
-                (source_url, page_title, chunk_index, section_heading, content, content_type)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                (source_url, source_site, region, content_type, page_title, chunk_index, section_heading, content)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 rows,
             )
@@ -525,17 +586,26 @@ def upsert_hfj_sections(sections: list[dict]) -> int:
     return len(rows)
 
 
-def ingest_hfj_pages():
+def ingest_all_sources():
     results = []
 
-    for url in HFJ_PAGE_SOURCES:
+    for source in CONTENT_SOURCES:
         try:
-            html = fetch_page_html(url)
-            page_title, sections = parse_hfj_page(html, url)
-            count = upsert_hfj_sections(sections)
+            html = fetch_page_html(source["url"])
+            page_title, sections = parse_page(
+                html=html,
+                url=source["url"],
+                source_site=source["source_site"],
+                region=source["region"],
+                content_type=source["content_type"],
+            )
+            count = upsert_sections(sections)
             results.append(
                 {
-                    "url": url,
+                    "url": source["url"],
+                    "source_site": source["source_site"],
+                    "region": source["region"],
+                    "content_type": source["content_type"],
                     "page_title": page_title,
                     "chunks_ingested": count,
                     "status": "ok",
@@ -544,7 +614,8 @@ def ingest_hfj_pages():
         except Exception as e:
             results.append(
                 {
-                    "url": url,
+                    "url": source["url"],
+                    "source_site": source["source_site"],
                     "status": "error",
                     "error": str(e),
                 }
@@ -556,7 +627,7 @@ def ingest_hfj_pages():
 @app.on_event("startup")
 def startup_event():
     init_db()
-    ingest_hfj_pages()
+    ingest_all_sources()
 
 
 def get_support_route(region_key: str):
@@ -584,7 +655,7 @@ def get_support_route(region_key: str):
     }
 
 
-def score_chunk(query: str, title: str, heading: str | None, content: str) -> float:
+def score_chunk(query: str, title: str, heading: str | None, content: str, source_site: str, region: str, content_type: str, user_region: str | None) -> float:
     query_terms = [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 2]
     if not query_terms:
         return 0.0
@@ -592,6 +663,7 @@ def score_chunk(query: str, title: str, heading: str | None, content: str) -> fl
     title_l = (title or "").lower()
     heading_l = (heading or "").lower()
     content_l = (content or "").lower()
+    query_l = query.lower()
 
     score = 0.0
 
@@ -612,24 +684,55 @@ def score_chunk(query: str, title: str, heading: str | None, content: str) -> fl
         "forced labor",
         "sex trafficking",
         "sexual exploitation",
+        "report modern slavery",
     ]
 
-    query_l = query.lower()
     for phrase in exact_phrases:
         if phrase in query_l and (
             phrase in title_l or phrase in heading_l or phrase in content_l
         ):
             score += 5.0
 
+    if user_region and region == user_region:
+        score += 6.0
+
+    if user_region == "ireland" and source_site == "hse":
+        score += 4.0
+
+    if user_region == "uk" and source_site == "modernslavery_uk":
+        score += 4.0
+
+    if "report" in query_l and content_type == "reporting":
+        score += 4.0
+
+    if "help" in query_l and content_type == "support":
+        score += 4.0
+
+    if ("sign" in query_l or "what is" in query_l) and content_type == "education":
+        score += 3.0
+
     return score
 
 
-def find_match(query: str):
+def infer_user_region(location: dict | None) -> str | None:
+    if not location:
+        return None
+
+    if location["kind"] == "state":
+        return "united_states"
+
+    key = normalize_country_key(location["value"])
+    if key in {"ireland", "uk", "united_states"}:
+        return key
+    return None
+
+
+def find_match(query: str, user_region: str | None = None):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT source_url, page_title, section_heading, content
+                SELECT source_url, source_site, region, content_type, page_title, section_heading, content
                 FROM hfj_content_chunks
                 """
             )
@@ -638,7 +741,16 @@ def find_match(query: str):
     scored = []
 
     for row in rows:
-        score = score_chunk(query, row[1], row[2], row[3])
+        score = score_chunk(
+            query=query,
+            title=row[4],
+            heading=row[5],
+            content=row[6],
+            source_site=row[1],
+            region=row[2],
+            content_type=row[3],
+            user_region=user_region,
+        )
         if score > 1:
             scored.append((score, row))
 
@@ -648,12 +760,15 @@ def find_match(query: str):
         return None
 
     top_chunks = [row for _, row in scored[:3]]
-    combined = "\n\n".join(chunk[3] for chunk in top_chunks)
+    combined = "\n\n".join(chunk[6] for chunk in top_chunks)
 
     return {
         "source": top_chunks[0][0],
-        "title": top_chunks[0][1],
-        "section_heading": top_chunks[0][2],
+        "source_site": top_chunks[0][1],
+        "region": top_chunks[0][2],
+        "content_type": top_chunks[0][3],
+        "title": top_chunks[0][4],
+        "section_heading": top_chunks[0][5],
         "answer": combined[:1400],
     }
 
@@ -816,10 +931,10 @@ def content_check():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT source_url, page_title, COUNT(*)
+                    SELECT source_site, region, content_type, page_title, COUNT(*)
                     FROM hfj_content_chunks
-                    GROUP BY source_url, page_title
-                    ORDER BY page_title
+                    GROUP BY source_site, region, content_type, page_title
+                    ORDER BY source_site, page_title
                     """
                 )
                 rows = cur.fetchall()
@@ -827,9 +942,11 @@ def content_check():
         return {
             "pages": [
                 {
-                    "source_url": row[0],
-                    "page_title": row[1],
-                    "chunk_count": row[2],
+                    "source_site": row[0],
+                    "region": row[1],
+                    "content_type": row[2],
+                    "page_title": row[3],
+                    "chunk_count": row[4],
                 }
                 for row in rows
             ]
@@ -838,10 +955,10 @@ def content_check():
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
-@app.post("/reingest-hfj")
-def reingest_hfj():
+@app.post("/reingest-all")
+def reingest_all():
     try:
-        results = ingest_hfj_pages()
+        results = ingest_all_sources()
         return {"status": "ok", "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingest error: {str(e)}")
@@ -919,7 +1036,8 @@ def chat(req: ChatRequest):
         session["stage"] = "awaiting_location"
         return build_help_prompt(detected_location, session_id)
 
-    match = find_match(text)
+    user_region = infer_user_region(location)
+    match = find_match(text, user_region=user_region)
     if match:
         return {
             "reply": add_safety_footer(match["answer"]),
@@ -927,6 +1045,7 @@ def chat(req: ChatRequest):
             "type": "hfj",
             "title": match["title"],
             "section_heading": match["section_heading"],
+            "source_site": match["source_site"],
             "session_id": session_id,
         }
 
