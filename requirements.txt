@@ -3,3 +3,4 @@ uvicorn
 pydantic
 openai
 pycountry
+psycopg2-binary
