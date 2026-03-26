@@ -31,7 +31,7 @@ def chat(req: ChatRequest):
     if "help" in text or "danger" in text or "controlled" in text:
         return {
             "reply": (
-                "If someone may be in immediate danger, contact emergency services first. "
+                "If someone may be in immediate danger, contact the emergency services first. "
                 "Please tell me the country or state so I can show the right support route."
             ),
             "source": "https://hopeforjustice.org/get-help/"
