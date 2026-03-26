@@ -864,13 +864,18 @@ def chat(req: ChatRequest):
             "session_id": session_id,
         }
 
-    location = detect_location(user_input, text)
-    if location:
-        if location["kind"] == "state":
-            result = build_us_state_response(location["value"])
-        else:
-            result = build_country_response(location["value"])
+location = detect_location(user_input, text)
 
+if location:
+    # FORCE state handling first
+    if location.get("kind") == "state":
+        result = build_us_state_response(location["value"])
+        result["session_id"] = session_id
+        return result
+
+    # Then countries
+    if location.get("kind") == "country":
+        result = build_country_response(location["value"])
         result["session_id"] = session_id
         return result
 
