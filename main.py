@@ -5,6 +5,7 @@ import os
 import uuid
 import re
 import json
+import pycountry
 from openai import OpenAI
 
 app = FastAPI()
@@ -199,21 +200,6 @@ STATE_ABBREVIATIONS = {
     "dc": "District of Columbia",
 }
 
-COUNTRY_KEYWORDS = {
-    "ireland": "Ireland",
-    "uk": "United Kingdom",
-    "united kingdom": "United Kingdom",
-    "england": "United Kingdom",
-    "scotland": "United Kingdom",
-    "wales": "United Kingdom",
-    "northern ireland": "United Kingdom",
-    "united states": "United States",
-    "usa": "United States",
-    "u.s.a.": "United States",
-    "us": "United States",
-    "u.s.": "United States",
-}
-
 
 def normalize(text: str) -> str:
     return " ".join(text.lower().strip().split())
@@ -264,14 +250,13 @@ def is_no(text: str) -> bool:
 
 
 def detect_us_state(text: str, original: str) -> dict | None:
-    # Strong match: full state names with word boundaries
+    # High-confidence: full state name
     for key, value in US_STATES.items():
         if re.search(rf"\b{re.escape(key)}\b", text):
             return {"kind": "state", "value": value, "confidence": "high"}
 
-    # Safer abbreviation handling:
-    # only accept explicit uppercase abbreviations from original text
-    # e.g. MN, CA, TX
+    # Medium-confidence: only uppercase abbreviations from original user input
+    # This avoids false positives like "in" -> Indiana or "or" -> Oregon
     upper_tokens = re.findall(r"\b[A-Z]{2}\b", original)
     for token in upper_tokens:
         token_lower = token.lower()
@@ -285,10 +270,41 @@ def detect_us_state(text: str, original: str) -> dict | None:
     return None
 
 
-def detect_country_from_keywords(text: str) -> dict | None:
-    for key, value in COUNTRY_KEYWORDS.items():
-        if re.search(rf"\b{re.escape(key)}\b", text):
-            return {"kind": "country", "value": value, "confidence": "high"}
+def detect_country_with_library(user_input: str) -> dict | None:
+    text = user_input.strip().lower()
+
+    # High-confidence: country name appears as a whole phrase in the input
+    for country in pycountry.countries:
+        names_to_check = {country.name.lower()}
+
+        official_name = getattr(country, "official_name", None)
+        if official_name:
+            names_to_check.add(official_name.lower())
+
+        common_name = getattr(country, "common_name", None)
+        if common_name:
+            names_to_check.add(common_name.lower())
+
+        for name in names_to_check:
+            if re.search(rf"\b{re.escape(name)}\b", text):
+                return {
+                    "kind": "country",
+                    "value": country.name,
+                    "confidence": "high",
+                }
+
+    # Medium-confidence: fuzzy match for short inputs like "Canada" or "Vietnam"
+    try:
+        result = pycountry.countries.search_fuzzy(user_input.strip())
+        if result:
+            return {
+                "kind": "country",
+                "value": result[0].name,
+                "confidence": "medium",
+            }
+    except LookupError:
+        pass
+
     return None
 
 
@@ -316,7 +332,11 @@ Message: {user_input}
         data = json.loads(raw)
         country = data.get("country")
         if isinstance(country, str) and country.strip():
-            return {"kind": "country", "value": country.strip(), "confidence": "medium"}
+            return {
+                "kind": "country",
+                "value": country.strip(),
+                "confidence": "medium",
+            }
         return None
     except Exception:
         return None
@@ -327,9 +347,9 @@ def detect_location(user_input: str, text: str) -> dict | None:
     if state_result:
         return state_result
 
-    keyword_country = detect_country_from_keywords(text)
-    if keyword_country:
-        return keyword_country
+    library_country = detect_country_with_library(user_input)
+    if library_country:
+        return library_country
 
     ai_country = detect_country_with_openai(user_input)
     if ai_country:
@@ -377,7 +397,14 @@ def build_country_response(country_name: str):
             "title": "Support in Ireland",
         }
 
-    if normalized in ["united kingdom", "uk", "england", "scotland", "wales", "northern ireland"]:
+    if normalized in [
+        "united kingdom",
+        "great britain",
+        "england",
+        "scotland",
+        "wales",
+        "northern ireland",
+    ]:
         return {
             "reply": (
                 "If you are in the UK:\n\n"
@@ -390,7 +417,7 @@ def build_country_response(country_name: str):
             "title": "Support in the UK",
         }
 
-    if normalized in ["united states", "usa", "us"]:
+    if normalized in ["united states", "united states of america"]:
         return {
             "reply": (
                 "If you are in the United States:\n\n"
@@ -426,18 +453,12 @@ def build_country_response(country_name: str):
 
 def build_confirmation_prompt(candidate: dict, session_id: str):
     value = candidate["value"]
-    if candidate["kind"] == "state":
-        prompt = f"Did you mean {value}? Please reply yes or no."
-        title = "Confirm state"
-    else:
-        prompt = f"Did you mean {value}? Please reply yes or no."
-        title = "Confirm country"
-
+    label = "state" if candidate["kind"] == "state" else "country"
     return {
-        "reply": prompt,
+        "reply": f"Did you mean {value} as your {label}? Please reply yes or no.",
         "source": "https://hopeforjustice.org/get-help/",
         "type": "hfj",
-        "title": title,
+        "title": f"Confirm {label}",
         "session_id": session_id,
     }
 
@@ -499,7 +520,7 @@ def chat(req: ChatRequest):
             return {
                 "reply": (
                     "Thanks. Please tell me the country or state more explicitly, "
-                    "for example Minnesota, California, Ireland, Vietnam, or the UK."
+                    "for example Minnesota, California, Ireland, Canada, Vietnam, or the UK."
                 ),
                 "source": "https://hopeforjustice.org/get-help/",
                 "type": "hfj",
@@ -534,7 +555,7 @@ def chat(req: ChatRequest):
             session["stage"] = "awaiting_location"
             return {
                 "reply": (
-                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, Vietnam, or the UK."
+                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, Canada, Vietnam, or the UK."
                 ),
                 "source": "https://hopeforjustice.org/get-help/",
                 "type": "hfj",
@@ -553,6 +574,7 @@ def chat(req: ChatRequest):
     # Help flow: awaiting location
     if session["stage"] == "awaiting_location":
         location = detect_location(user_input, text)
+
         if location:
             if location["confidence"] == "high":
                 session["stage"] = None
@@ -572,12 +594,14 @@ def chat(req: ChatRequest):
 
         return {
             "reply": (
-                "Please tell me the country or state so I can guide you properly. "
-                "For example: Minnesota, California, Ireland, Vietnam, or UK."
+                "Thank you. I may not have fully recognized that location.\n\n"
+                "If there is immediate danger, contact local emergency services right away. "
+                "You can also seek help from official local authorities or trusted organisations.\n\n"
+                "I’ve included Hope for Justice help information below."
             ),
             "source": "https://hopeforjustice.org/get-help/",
             "type": "hfj",
-            "title": "Location needed",
+            "title": "General location guidance",
             "session_id": session_id,
         }
 
