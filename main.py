@@ -6,7 +6,6 @@ from openai import OpenAI
 import os
 import uuid
 import re
-import math
 import requests
 import pycountry
 import psycopg
@@ -37,9 +36,7 @@ HFJ_PAGE_SOURCES = [
     "https://hopeforjustice.org/resources-and-statistics/spot-the-signs-resources/",
 ]
 
-USER_AGENT = (
-    "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.0; +https://hopeforjustice.org)"
-)
+USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.0)"
 
 
 class ChatRequest(BaseModel):
@@ -166,8 +163,16 @@ def normalize(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
 
+def normalize_whitespace(text: str) -> str:
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def normalize_country_key(name: str) -> str:
     name = name.lower().strip()
+
     mapping = {
         "uk": "uk",
         "united kingdom": "uk",
@@ -183,6 +188,7 @@ def normalize_country_key(name: str) -> str:
         "united states": "united_states",
         "united states of america": "united_states",
     }
+
     return mapping.get(name, name.replace(" ", "_"))
 
 
@@ -192,35 +198,23 @@ def slugify_state(state_name: str) -> str:
 
 def is_help_trigger(text: str) -> bool:
     triggers = [
-        "help",
-        "danger",
-        "controlled",
-        "trapped",
-        "forced",
-        "cannot leave",
-        "can't leave",
-        "being exploited",
-        "someone is being exploited",
-        "someone is being controlled",
         "i need help",
-        "i think this is trafficking",
-        "report trafficking",
+        "help me",
         "i think i am being trafficked",
         "i think i'm being trafficked",
         "i am being trafficked",
         "i'm being trafficked",
+        "someone is being controlled",
+        "someone is being exploited",
+        "i think this is trafficking",
+        "report trafficking",
+        "cannot leave",
+        "can't leave",
+        "forced",
+        "trapped",
+        "controlled",
     ]
     return any(t in text for t in triggers)
-
-
-def is_yes(text: str) -> bool:
-    yes_words = ["yes", "yeah", "y", "urgent", "in danger", "immediate danger"]
-    return any(word == text or word in text for word in yes_words)
-
-
-def is_no(text: str) -> bool:
-    no_words = ["no", "nope", "not right now", "not immediate", "safe for now"]
-    return any(word == text or word in text for word in no_words)
 
 
 def detect_us_state(text: str, original: str) -> dict | None:
@@ -246,11 +240,12 @@ def detect_country_with_library(user_input: str) -> dict | None:
 
     for country in pycountry.countries:
         names_to_check = {country.name.lower()}
-        official_name = getattr(country, "official_name", None)
-        common_name = getattr(country, "common_name", None)
 
+        official_name = getattr(country, "official_name", None)
         if official_name:
             names_to_check.add(official_name.lower())
+
+        common_name = getattr(country, "common_name", None)
         if common_name:
             names_to_check.add(common_name.lower())
 
@@ -281,11 +276,18 @@ def detect_location(user_input: str, text: str) -> dict | None:
     if state_result:
         return state_result
 
-    library_country = detect_country_with_library(user_input)
-    if library_country:
-        return library_country
+    country_result = detect_country_with_library(user_input)
+    if country_result:
+        return country_result
 
     return None
+
+
+def add_safety_footer(text: str) -> str:
+    return (
+        text.strip()
+        + "\n\nIf someone may be in danger, please seek help from official services immediately."
+    )
 
 
 def init_db():
@@ -395,7 +397,6 @@ def chunk_text(text: str, max_chars: int = 1200) -> list[str]:
             if len(p) <= max_chars:
                 current = p
             else:
-                # hard split very long paragraph
                 for i in range(0, len(p), max_chars):
                     part = p[i:i + max_chars].strip()
                     if part:
@@ -406,13 +407,6 @@ def chunk_text(text: str, max_chars: int = 1200) -> list[str]:
         chunks.append(current)
 
     return chunks
-
-
-def normalize_whitespace(text: str) -> str:
-    text = text.replace("\xa0", " ")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
 
 
 def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
@@ -433,9 +427,9 @@ def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
         page_title = normalize_whitespace(soup.title.get_text(" ", strip=True))
 
     nodes = soup.find_all(["h2", "h3", "p", "li"])
-    sections: list[dict] = []
+    sections = []
     current_heading = page_title
-    buffer: list[str] = []
+    buffer = []
 
     def flush_buffer():
         nonlocal buffer
@@ -462,7 +456,6 @@ def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
             flush_buffer()
             current_heading = text
         else:
-            # filter obvious junk
             lowered = text.lower()
             if lowered in {"accept", "privacy policy"}:
                 continue
@@ -472,7 +465,7 @@ def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
     return page_title, sections
 
 
-def upsert_hfj_sections(sections: list[dict]):
+def upsert_hfj_sections(sections: list[dict]) -> int:
     if not sections:
         return 0
 
@@ -511,6 +504,7 @@ def upsert_hfj_sections(sections: list[dict]):
 
 def ingest_hfj_pages():
     results = []
+
     for url in HFJ_PAGE_SOURCES:
         try:
             html = fetch_page_html(url)
@@ -532,6 +526,7 @@ def ingest_hfj_pages():
                     "error": str(e),
                 }
             )
+
     return results
 
 
@@ -571,34 +566,35 @@ def score_chunk(query: str, title: str, heading: str | None, content: str) -> fl
     if not query_terms:
         return 0.0
 
-    haystacks = [
-        (title or "").lower(),
-        (heading or "").lower(),
-        (content or "").lower(),
-    ]
+    title_l = (title or "").lower()
+    heading_l = (heading or "").lower()
+    content_l = (content or "").lower()
 
     score = 0.0
+
     for term in query_terms:
-        if term in haystacks[0]:
+        if term in title_l:
             score += 4.0
-        if term in haystacks[1]:
+        if term in heading_l:
             score += 3.0
-        if term in haystacks[2]:
+        if term in content_l:
             score += 1.0
 
-    # exact useful phrases
     exact_phrases = [
         "human trafficking",
         "spot the signs",
         "warning signs",
         "get help",
         "forced labour",
+        "forced labor",
         "sex trafficking",
         "sexual exploitation",
     ]
+
+    query_l = query.lower()
     for phrase in exact_phrases:
-        if phrase in query.lower() and (
-            phrase in haystacks[0] or phrase in haystacks[1] or phrase in haystacks[2]
+        if phrase in query_l and (
+            phrase in title_l or phrase in heading_l or phrase in content_l
         ):
             score += 5.0
 
@@ -616,23 +612,26 @@ def find_match(query: str):
             )
             rows = cur.fetchall()
 
-    best_row = None
-    best_score = 0.0
+    scored = []
 
     for row in rows:
         score = score_chunk(query, row[1], row[2], row[3])
-        if score > best_score:
-            best_score = score
-            best_row = row
+        if score > 1:
+            scored.append((score, row))
 
-    if not best_row or best_score < 2.0:
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    if not scored:
         return None
 
+    top_chunks = [row for _, row in scored[:3]]
+    combined = "\n\n".join(chunk[3] for chunk in top_chunks)
+
     return {
-        "source": best_row[0],
-        "title": best_row[1],
-        "section_heading": best_row[2],
-        "answer": best_row[3],
+        "source": top_chunks[0][0],
+        "title": top_chunks[0][1],
+        "section_heading": top_chunks[0][2],
+        "answer": combined[:1400],
     }
 
 
@@ -698,14 +697,30 @@ def build_country_response(country_name: str):
     }
 
 
-def build_confirmation_prompt(candidate: dict, session_id: str):
-    value = candidate["value"]
-    label = "state" if candidate["kind"] == "state" else "country"
+def build_help_prompt(location: dict | None, session_id: str):
+    if location and location["confidence"] == "high":
+        return {
+            "reply": (
+                "I’m really sorry this may be happening.\n\n"
+                "If there is immediate danger, contact emergency services now.\n\n"
+                f"I understand you may be in {location['value']}. "
+                "I can give you the safest support options for that location."
+            ),
+            "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": "Immediate support",
+            "session_id": session_id,
+        }
+
     return {
-        "reply": f"Did you mean {value} as your {label}? Please reply yes or no.",
+        "reply": (
+            "I’m really sorry this may be happening.\n\n"
+            "If there is immediate danger, contact emergency services now.\n\n"
+            "Please tell me your country or state and I’ll give you the right support options."
+        ),
         "source": "https://hopeforjustice.org/get-help/",
         "type": "hfj",
-        "title": f"Confirm {label}",
+        "title": "Immediate support",
         "session_id": session_id,
     }
 
@@ -821,185 +836,17 @@ def chat(req: ChatRequest):
         session_id,
         {
             "stage": None,
-            "pending_candidate": None,
             "saved_location": None,
         },
     )
-
-    if session["stage"] == "awaiting_location_confirmation":
-        if is_yes(text):
-            candidate = session.get("pending_candidate")
-            session["stage"] = None
-            session["pending_candidate"] = None
-            session["saved_location"] = None
-
-            if not candidate:
-                return {
-                    "reply": "Please tell me the country or state so I can guide you properly.",
-                    "source": "https://hopeforjustice.org/get-help/",
-                    "type": "hfj",
-                    "title": "Location needed",
-                    "session_id": session_id,
-                }
-
-            if candidate["kind"] == "state":
-                result = build_us_state_response(candidate["value"])
-            else:
-                result = build_country_response(candidate["value"])
-
-            result["session_id"] = session_id
-            return result
-
-        if is_no(text):
-            session["stage"] = "awaiting_location"
-            session["pending_candidate"] = None
-            session["saved_location"] = None
-            return {
-                "reply": (
-                    "Thanks. Please tell me the country or state more explicitly, "
-                    "for example Minnesota, California, Ireland, Canada, Belgium, Vietnam, or the UK."
-                ),
-                "source": "https://hopeforjustice.org/get-help/",
-                "type": "hfj",
-                "title": "Location needed",
-                "session_id": session_id,
-            }
-
-        return {
-            "reply": "Please reply yes or no.",
-            "source": "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": "Location confirmation",
-            "session_id": session_id,
-        }
-
-    if session["stage"] == "awaiting_danger":
-        if is_yes(text):
-            saved_location = session.get("saved_location")
-
-            if saved_location:
-                if saved_location["confidence"] == "high":
-                    session["stage"] = None
-                    session["pending_candidate"] = None
-                    session["saved_location"] = None
-
-                    if saved_location["kind"] == "state":
-                        result = build_us_state_response(saved_location["value"])
-                    else:
-                        result = build_country_response(saved_location["value"])
-
-                    result["session_id"] = session_id
-                    result["reply"] = (
-                        "If someone is in immediate danger, contact emergency services right away.\n\n"
-                        + result["reply"]
-                    )
-                    return result
-
-                session["stage"] = "awaiting_location_confirmation"
-                session["pending_candidate"] = saved_location
-                session["saved_location"] = None
-                return {
-                    "reply": (
-                        "If someone is in immediate danger, contact emergency services right away.\n\n"
-                        f"Did you mean {saved_location['value']} as your location? Please reply yes or no."
-                    ),
-                    "source": "https://hopeforjustice.org/get-help/",
-                    "type": "hfj",
-                    "title": "Confirm location",
-                    "session_id": session_id,
-                }
-
-            session["stage"] = "awaiting_location"
-            return {
-                "reply": (
-                    "If someone is in immediate danger, contact emergency services right away.\n\n"
-                    "Please now tell me the country or state so I can show the most relevant support route."
-                ),
-                "source": "https://hopeforjustice.org/get-help/",
-                "type": "hfj",
-                "title": "Emergency support",
-                "session_id": session_id,
-            }
-
-        if is_no(text):
-            saved_location = session.get("saved_location")
-
-            if saved_location:
-                if saved_location["confidence"] == "high":
-                    session["stage"] = None
-                    session["pending_candidate"] = None
-                    session["saved_location"] = None
-
-                    if saved_location["kind"] == "state":
-                        result = build_us_state_response(saved_location["value"])
-                    else:
-                        result = build_country_response(saved_location["value"])
-
-                    result["session_id"] = session_id
-                    return result
-
-                session["stage"] = "awaiting_location_confirmation"
-                session["pending_candidate"] = saved_location
-                session["saved_location"] = None
-                return build_confirmation_prompt(saved_location, session_id)
-
-            session["stage"] = "awaiting_location"
-            return {
-                "reply": (
-                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, Canada, Belgium, Vietnam, or the UK."
-                ),
-                "source": "https://hopeforjustice.org/get-help/",
-                "type": "hfj",
-                "title": "Location needed",
-                "session_id": session_id,
-            }
-
-        return {
-            "reply": "Please reply yes or no: is anyone in immediate danger right now?",
-            "source": "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": "Immediate danger check",
-            "session_id": session_id,
-        }
 
     if session["stage"] == "awaiting_location":
         location = detect_location(user_input, text)
 
         if location:
-            if location["confidence"] == "high":
-                session["stage"] = None
-                session["pending_candidate"] = None
-                session["saved_location"] = None
-
-                if location["kind"] == "state":
-                    result = build_us_state_response(location["value"])
-                else:
-                    result = build_country_response(location["value"])
-
-                result["session_id"] = session_id
-                return result
-
-            session["stage"] = "awaiting_location_confirmation"
-            session["pending_candidate"] = location
+            session["stage"] = None
             session["saved_location"] = None
-            return build_confirmation_prompt(location, session_id)
 
-        return {
-            "reply": (
-                "Thank you. I may not have fully recognized that location.\n\n"
-                "If there is immediate danger, contact local emergency services right away. "
-                "You can also seek help from official local authorities or trusted organisations.\n\n"
-                "I’ve included Hope for Justice help information below."
-            ),
-            "source": "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": "General location guidance",
-            "session_id": session_id,
-        }
-
-    location = detect_location(user_input, text)
-    if location:
-        if location["confidence"] == "high":
             if location["kind"] == "state":
                 result = build_us_state_response(location["value"])
             else:
@@ -1008,40 +855,48 @@ def chat(req: ChatRequest):
             result["session_id"] = session_id
             return result
 
-        session["stage"] = "awaiting_location_confirmation"
-        session["pending_candidate"] = location
-        session["saved_location"] = None
-        return build_confirmation_prompt(location, session_id)
+        return {
+            "reply": "Please tell me your country or state so I can give you the right support options.",
+            "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": "Location needed",
+            "session_id": session_id,
+        }
+
+    location = detect_location(user_input, text)
+    if location:
+        if location["kind"] == "state":
+            result = build_us_state_response(location["value"])
+        else:
+            result = build_country_response(location["value"])
+
+        result["session_id"] = session_id
+        return result
 
     if is_help_trigger(text):
         detected_location = detect_location(user_input, text)
-        session["stage"] = "awaiting_danger"
-        session["pending_candidate"] = None
-        session["saved_location"] = detected_location
 
         if detected_location and detected_location["confidence"] == "high":
-            location_line = f"I understand you may be in {detected_location['value']}.\n\n"
-        elif detected_location:
-            location_line = f"I may have picked up {detected_location['value']} as your location.\n\n"
-        else:
-            location_line = ""
+            if detected_location["kind"] == "state":
+                result = build_us_state_response(detected_location["value"])
+            else:
+                result = build_country_response(detected_location["value"])
 
-        return {
-            "reply": (
-                "I’m sorry this may be happening.\n\n"
-                f"{location_line}"
-                "Is anyone in immediate danger right now? Please reply yes or no."
-            ),
-            "source": "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": "Immediate danger check",
-            "session_id": session_id,
-        }
+            result["reply"] = (
+                "I’m really sorry this may be happening.\n\n"
+                "If there is immediate danger, contact emergency services now.\n\n"
+                + result["reply"]
+            )
+            result["session_id"] = session_id
+            return result
+
+        session["stage"] = "awaiting_location"
+        return build_help_prompt(detected_location, session_id)
 
     match = find_match(text)
     if match:
         return {
-            "reply": match["answer"],
+            "reply": add_safety_footer(match["answer"]),
             "source": match["source"],
             "type": "hfj",
             "title": match["title"],
