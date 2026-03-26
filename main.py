@@ -20,7 +20,7 @@ app.add_middleware(
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key) if api_key else None
 
-# Simple in-memory session state for MVP
+# MVP in-memory session store
 SESSION_STATE = {}
 
 
@@ -226,13 +226,11 @@ def slugify_state(state_name: str) -> str:
 def find_match(text: str):
     best = None
     best_score = 0
-
     for item in HFJ_KNOWLEDGE:
         score = sum(1 for kw in item["keywords"] if kw in text)
         if score > best_score:
             best_score = score
             best = item
-
     return best if best_score > 0 else None
 
 
@@ -265,27 +263,36 @@ def is_no(text: str) -> bool:
     return any(word == text or word in text for word in no_words)
 
 
-def detect_us_state(text: str) -> str | None:
+def detect_us_state(text: str, original: str) -> dict | None:
+    # Strong match: full state names with word boundaries
     for key, value in US_STATES.items():
         if re.search(rf"\b{re.escape(key)}\b", text):
-            return value
+            return {"kind": "state", "value": value, "confidence": "high"}
 
-    tokens = re.findall(r"\b[a-z]{2}\b", text.lower())
-    for token in tokens:
-        if token in STATE_ABBREVIATIONS:
-            return STATE_ABBREVIATIONS[token]
+    # Safer abbreviation handling:
+    # only accept explicit uppercase abbreviations from original text
+    # e.g. MN, CA, TX
+    upper_tokens = re.findall(r"\b[A-Z]{2}\b", original)
+    for token in upper_tokens:
+        token_lower = token.lower()
+        if token_lower in STATE_ABBREVIATIONS:
+            return {
+                "kind": "state",
+                "value": STATE_ABBREVIATIONS[token_lower],
+                "confidence": "medium",
+            }
 
     return None
 
 
-def detect_country_from_keywords(text: str) -> str | None:
+def detect_country_from_keywords(text: str) -> dict | None:
     for key, value in COUNTRY_KEYWORDS.items():
         if re.search(rf"\b{re.escape(key)}\b", text):
-            return value
+            return {"kind": "country", "value": value, "confidence": "high"}
     return None
 
 
-def detect_country_with_openai(user_input: str) -> str | None:
+def detect_country_with_openai(user_input: str) -> dict | None:
     if not client:
         return None
 
@@ -299,20 +306,36 @@ Rules:
 - Return JSON only.
 - Format: {{"country": "<country name or null>"}}
 - If there is no country, return {{"country": null}}.
-- Do not guess a U.S. state as a country.
+- Do not return a U.S. state as a country.
+- Be conservative. If unsure, return null.
 
 Message: {user_input}
 """
         )
-
-        text = response.output_text.strip()
-        data = json.loads(text)
+        raw = response.output_text.strip()
+        data = json.loads(raw)
         country = data.get("country")
         if isinstance(country, str) and country.strip():
-            return country.strip()
+            return {"kind": "country", "value": country.strip(), "confidence": "medium"}
         return None
     except Exception:
         return None
+
+
+def detect_location(user_input: str, text: str) -> dict | None:
+    state_result = detect_us_state(text, user_input)
+    if state_result:
+        return state_result
+
+    keyword_country = detect_country_from_keywords(text)
+    if keyword_country:
+        return keyword_country
+
+    ai_country = detect_country_with_openai(user_input)
+    if ai_country:
+        return ai_country
+
+    return None
 
 
 def build_us_state_response(state_name: str):
@@ -385,7 +408,7 @@ def build_country_response(country_name: str):
             "title": "Support in the United States",
         }
 
-    # Generic global fallback — acknowledge country, but do not invent contacts
+    # Safe global fallback
     display_name = country_name.strip()
     return {
         "reply": (
@@ -401,20 +424,22 @@ def build_country_response(country_name: str):
     }
 
 
-def detect_location(user_input: str, text: str):
-    state_name = detect_us_state(text)
-    if state_name:
-        return {"kind": "state", "value": state_name}
+def build_confirmation_prompt(candidate: dict, session_id: str):
+    value = candidate["value"]
+    if candidate["kind"] == "state":
+        prompt = f"Did you mean {value}? Please reply yes or no."
+        title = "Confirm state"
+    else:
+        prompt = f"Did you mean {value}? Please reply yes or no."
+        title = "Confirm country"
 
-    keyword_country = detect_country_from_keywords(text)
-    if keyword_country:
-        return {"kind": "country", "value": keyword_country}
-
-    ai_country = detect_country_with_openai(user_input)
-    if ai_country:
-        return {"kind": "country", "value": ai_country}
-
-    return None
+    return {
+        "reply": prompt,
+        "source": "https://hopeforjustice.org/get-help/",
+        "type": "hfj",
+        "title": title,
+        "session_id": session_id,
+    }
 
 
 @app.get("/")
@@ -436,9 +461,61 @@ def chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     session_id = req.session_id or str(uuid.uuid4())
-    session = SESSION_STATE.setdefault(session_id, {"stage": None})
+    session = SESSION_STATE.setdefault(
+        session_id,
+        {
+            "stage": None,
+            "pending_candidate": None,
+        },
+    )
 
-    # Guided help flow: waiting for yes/no about danger
+    # Confirmation stage
+    if session["stage"] == "awaiting_location_confirmation":
+        if is_yes(text):
+            candidate = session.get("pending_candidate")
+            session["stage"] = None
+            session["pending_candidate"] = None
+
+            if not candidate:
+                return {
+                    "reply": "Please tell me the country or state so I can guide you properly.",
+                    "source": "https://hopeforjustice.org/get-help/",
+                    "type": "hfj",
+                    "title": "Location needed",
+                    "session_id": session_id,
+                }
+
+            if candidate["kind"] == "state":
+                result = build_us_state_response(candidate["value"])
+            else:
+                result = build_country_response(candidate["value"])
+
+            result["session_id"] = session_id
+            return result
+
+        if is_no(text):
+            session["stage"] = "awaiting_location"
+            session["pending_candidate"] = None
+            return {
+                "reply": (
+                    "Thanks. Please tell me the country or state more explicitly, "
+                    "for example Minnesota, California, Ireland, Vietnam, or the UK."
+                ),
+                "source": "https://hopeforjustice.org/get-help/",
+                "type": "hfj",
+                "title": "Location needed",
+                "session_id": session_id,
+            }
+
+        return {
+            "reply": "Please reply yes or no.",
+            "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": "Location confirmation",
+            "session_id": session_id,
+        }
+
+    # Help flow: danger check
     if session["stage"] == "awaiting_danger":
         if is_yes(text):
             session["stage"] = "awaiting_location"
@@ -473,19 +550,25 @@ def chat(req: ChatRequest):
             "session_id": session_id,
         }
 
-    # Guided help flow: waiting for location
+    # Help flow: awaiting location
     if session["stage"] == "awaiting_location":
         location = detect_location(user_input, text)
         if location:
-            session["stage"] = None
+            if location["confidence"] == "high":
+                session["stage"] = None
+                session["pending_candidate"] = None
 
-            if location["kind"] == "state":
-                result = build_us_state_response(location["value"])
-            else:
-                result = build_country_response(location["value"])
+                if location["kind"] == "state":
+                    result = build_us_state_response(location["value"])
+                else:
+                    result = build_country_response(location["value"])
 
-            result["session_id"] = session_id
-            return result
+                result["session_id"] = session_id
+                return result
+
+            session["stage"] = "awaiting_location_confirmation"
+            session["pending_candidate"] = location
+            return build_confirmation_prompt(location, session_id)
 
         return {
             "reply": (
@@ -498,20 +581,26 @@ def chat(req: ChatRequest):
             "session_id": session_id,
         }
 
-    # Direct location handling
+    # Direct location handling outside help flow
     location = detect_location(user_input, text)
     if location:
-        if location["kind"] == "state":
-            result = build_us_state_response(location["value"])
-        else:
-            result = build_country_response(location["value"])
+        if location["confidence"] == "high":
+            if location["kind"] == "state":
+                result = build_us_state_response(location["value"])
+            else:
+                result = build_country_response(location["value"])
 
-        result["session_id"] = session_id
-        return result
+            result["session_id"] = session_id
+            return result
+
+        session["stage"] = "awaiting_location_confirmation"
+        session["pending_candidate"] = location
+        return build_confirmation_prompt(location, session_id)
 
     # Start guided help flow
     if is_help_trigger(text):
         session["stage"] = "awaiting_danger"
+        session["pending_candidate"] = None
         return {
             "reply": (
                 "I’m sorry this may be happening.\n\n"
