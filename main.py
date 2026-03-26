@@ -1,7 +1,11 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+import os
+from openai import OpenAI
 
 app = FastAPI()
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 class ChatRequest(BaseModel):
     message: str
@@ -10,37 +14,35 @@ class ChatRequest(BaseModel):
 def root():
     return {"message": "HFJ Assistant is running"}
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
 @app.post("/chat")
 def chat(req: ChatRequest):
-    text = req.message.lower()
+    user_input = req.message
 
-    if "spot" in text or "sign" in text:
-        return {
-            "reply": (
-                "Hope for Justice highlights signs such as fear or anxiety, "
-                "restricted movement, someone else controlling identity documents, "
-                "poor living conditions, and signs of low or no pay."
-            ),
-            "source": "https://hopeforjustice.org/spot-the-signs/"
-        }
-
+    # Simple safety routing first
+    text = user_input.lower()
     if "help" in text or "danger" in text or "controlled" in text:
         return {
             "reply": (
-                "If someone may be in immediate danger, contact the emergency services first. "
-                "Please tell me the country or state so I can show the right support route."
-            ),
-            "source": "https://hopeforjustice.org/get-help/"
+                "I’m sorry this may be happening. If someone is in immediate danger, "
+                "please contact emergency services. Tell me your country or state and I’ll guide you to the right support."
+            )
         }
 
+    # Otherwise use AI
+    response = client.responses.create(
+        model="gpt-5.3",
+        input=f"""
+You are the Hope for Justice assistant.
+
+Your role:
+- Explain human trafficking
+- Help users spot the signs
+- Be clear, calm, and supportive
+
+Question: {user_input}
+"""
+    )
+
     return {
-        "reply": (
-            "I can help explain trafficking-related topics, spot-the-signs guidance, "
-            "or route someone to support. Try asking 'How do I spot the signs?'"
-        ),
-        "source": "https://hopeforjustice.org/"
+        "reply": response.output_text
     }
