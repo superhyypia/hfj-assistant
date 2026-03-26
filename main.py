@@ -152,6 +152,20 @@ STATE_ABBREVIATIONS = {
     "dc": "District of Columbia",
 }
 
+JUNK_PATTERNS = [
+    "out of date browser",
+    "update your browser",
+    "we use cookies",
+    "privacy policy",
+    "cookie settings",
+    "accept cookies",
+    "terms and conditions",
+    "all rights reserved",
+    "skip to content",
+    "manage consent",
+    "close this notice",
+]
+
 
 def get_db_connection():
     if not database_url:
@@ -215,6 +229,11 @@ def is_help_trigger(text: str) -> bool:
         "controlled",
     ]
     return any(t in text for t in triggers)
+
+
+def is_junk(text: str) -> bool:
+    t = text.lower()
+    return any(pattern in t for pattern in JUNK_PATTERNS)
 
 
 def detect_us_state(text: str, original: str) -> dict | None:
@@ -419,14 +438,17 @@ def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
         for tag in soup.select(selector):
             tag.decompose()
 
+    main_content = soup.find("main")
+    root = main_content if main_content else soup
+
     page_title = "Hope for Justice"
-    h1 = soup.find("h1")
+    h1 = root.find("h1")
     if h1:
         page_title = normalize_whitespace(h1.get_text(" ", strip=True))
     elif soup.title:
         page_title = normalize_whitespace(soup.title.get_text(" ", strip=True))
 
-    nodes = soup.find_all(["h2", "h3", "p", "li"])
+    nodes = root.find_all(["h2", "h3", "p", "li"])
     sections = []
     current_heading = page_title
     buffer = []
@@ -449,16 +471,17 @@ def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
 
     for node in nodes:
         text = normalize_whitespace(node.get_text(" ", strip=True))
-        if not text or len(text) < 3:
+
+        if not text or len(text) < 20:
+            continue
+
+        if is_junk(text):
             continue
 
         if node.name in ["h2", "h3"]:
             flush_buffer()
             current_heading = text
         else:
-            lowered = text.lower()
-            if lowered in {"accept", "privacy policy"}:
-                continue
             buffer.append(text)
 
     flush_buffer()
