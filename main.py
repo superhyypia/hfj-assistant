@@ -642,11 +642,12 @@ def build_us_state_response(state_name: str):
     return {
         "reply": (
             f"If you are in {state_name}:\n\n"
-            "• Call 911 if there is immediate danger\n"
+            "• If there is immediate danger, call 911 now\n"
             "• National Human Trafficking Hotline: 1-888-373-7888\n"
             "• Text: 233733\n"
             "• Live chat and online reporting are also available\n\n"
-            f"I’ve also included the official {state_name} page and the local services directory."
+            f"The National Human Trafficking Hotline also has a dedicated {state_name} page, "
+            "and I’ve included the local services directory below."
         ),
         "source": state_page,
         "extra_sources": [
