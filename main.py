@@ -1,12 +1,16 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from openai import OpenAI
+
 import os
 import uuid
 import re
+import math
+import requests
 import pycountry
 import psycopg
-from openai import OpenAI
+from bs4 import BeautifulSoup
 
 app = FastAPI()
 
@@ -24,73 +28,24 @@ database_url = os.getenv("DATABASE_URL")
 
 SESSION_STATE = {}
 
+HFJ_PAGE_SOURCES = [
+    "https://hopeforjustice.org/human-trafficking/",
+    "https://hopeforjustice.org/spot-the-signs/",
+    "https://hopeforjustice.org/get-help/",
+    "https://hopeforjustice.org/contact/",
+    "https://hopeforjustice.org/resources-and-statistics/",
+    "https://hopeforjustice.org/resources-and-statistics/spot-the-signs-resources/",
+]
+
+USER_AGENT = (
+    "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.0; +https://hopeforjustice.org)"
+)
+
 
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
 
-
-HFJ_KNOWLEDGE = [
-    {
-        "title": "What is human trafficking?",
-        "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": [
-            "what is human trafficking",
-            "what is trafficking",
-            "define trafficking",
-            "human trafficking meaning",
-        ],
-        "answer": (
-            "Human trafficking is the exploitation of another person for labour, "
-            "services, or commercial sex through force, fraud, or coercion.\n\n"
-            "It is not just about movement — the key issue is exploitation."
-        ),
-    },
-    {
-        "title": "Spot the signs",
-        "source": "https://hopeforjustice.org/spot-the-signs/",
-        "keywords": [
-            "spot the signs",
-            "warning signs",
-            "how do i spot",
-            "signs of trafficking",
-        ],
-        "answer": (
-            "Common warning signs include:\n\n"
-            "• Fear, anxiety, or inability to speak freely\n"
-            "• Someone else controlling documents or movement\n"
-            "• Poor living conditions or lack of pay\n"
-            "• Dependency on another person\n\n"
-            "Signs vary depending on the type of exploitation."
-        ),
-    },
-    {
-        "title": "Labour trafficking",
-        "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": [
-            "labour trafficking",
-            "labor trafficking",
-            "forced labour",
-            "forced labor",
-        ],
-        "answer": (
-            "Labour trafficking involves exploitation through work.\n\n"
-            "It may include low pay, threats, long hours, poor conditions, and restricted movement."
-        ),
-    },
-    {
-        "title": "Sex trafficking",
-        "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": [
-            "sex trafficking",
-            "sexual exploitation",
-        ],
-        "answer": (
-            "Sex trafficking involves exploitation for commercial sex through force, fraud, or coercion.\n\n"
-            "It may involve control, threats, or manipulation."
-        ),
-    },
-]
 
 US_STATES = {
     "alabama": "Alabama",
@@ -207,106 +162,12 @@ def get_db_connection():
     return psycopg.connect(database_url)
 
 
-def init_db():
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS hfj_support_routes (
-                    region_key TEXT PRIMARY KEY,
-                    display_name TEXT NOT NULL,
-                    emergency_text TEXT,
-                    phone TEXT,
-                    website TEXT
-                )
-                """
-            )
-
-            cur.executemany(
-                """
-                INSERT INTO hfj_support_routes
-                (region_key, display_name, emergency_text, phone, website)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (region_key) DO NOTHING
-                """,
-                [
-                    (
-                        "ireland",
-                        "Ireland",
-                        "Call 112 or 999 if there is immediate danger.",
-                        "01 795 8280",
-                        "https://www2.hse.ie/services/human-trafficking/",
-                    ),
-                    (
-                        "uk",
-                        "United Kingdom",
-                        "Call 999 if there is immediate danger.",
-                        "0800 0121 700",
-                        "https://www.modernslavery.gov.uk/",
-                    ),
-                    (
-                        "united_states",
-                        "United States",
-                        "Call 911 if there is immediate danger.",
-                        "1-888-373-7888",
-                        "https://humantraffickinghotline.org/en/contact",
-                    ),
-                    (
-                        "canada",
-                        "Canada",
-                        "Call 911 if there is immediate danger.",
-                        "1-833-900-1010",
-                        "https://www.canadianhumantraffickinghotline.ca/",
-                    ),
-                    (
-                        "belgium",
-                        "Belgium",
-                        "Contact local emergency services if there is immediate danger.",
-                        None,
-                        "https://hopeforjustice.org/get-help/",
-                    ),
-                ],
-            )
-        conn.commit()
-
-
-@app.on_event("startup")
-def startup_event():
-    init_db()
-
-
-def get_support_route(region_key: str):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT region_key, display_name, emergency_text, phone, website
-                FROM hfj_support_routes
-                WHERE region_key = %s
-                """,
-                (region_key,),
-            )
-            row = cur.fetchone()
-
-    if not row:
-        return None
-
-    return {
-        "region_key": row[0],
-        "display_name": row[1],
-        "emergency_text": row[2],
-        "phone": row[3],
-        "website": row[4],
-    }
-
-
 def normalize(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
 
 def normalize_country_key(name: str) -> str:
     name = name.lower().strip()
-
     mapping = {
         "uk": "uk",
         "united kingdom": "uk",
@@ -322,23 +183,11 @@ def normalize_country_key(name: str) -> str:
         "united states": "united_states",
         "united states of america": "united_states",
     }
-
     return mapping.get(name, name.replace(" ", "_"))
 
 
 def slugify_state(state_name: str) -> str:
     return state_name.lower().replace(" ", "-")
-
-
-def find_match(text: str):
-    best = None
-    best_score = 0
-    for item in HFJ_KNOWLEDGE:
-        score = sum(1 for kw in item["keywords"] if kw in text)
-        if score > best_score:
-            best_score = score
-            best = item
-    return best if best_score > 0 else None
 
 
 def is_help_trigger(text: str) -> bool:
@@ -397,12 +246,11 @@ def detect_country_with_library(user_input: str) -> dict | None:
 
     for country in pycountry.countries:
         names_to_check = {country.name.lower()}
-
         official_name = getattr(country, "official_name", None)
+        common_name = getattr(country, "common_name", None)
+
         if official_name:
             names_to_check.add(official_name.lower())
-
-        common_name = getattr(country, "common_name", None)
         if common_name:
             names_to_check.add(common_name.lower())
 
@@ -438,6 +286,354 @@ def detect_location(user_input: str, text: str) -> dict | None:
         return library_country
 
     return None
+
+
+def init_db():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hfj_support_routes (
+                    region_key TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    emergency_text TEXT,
+                    phone TEXT,
+                    website TEXT
+                )
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hfj_content_chunks (
+                    id BIGSERIAL PRIMARY KEY,
+                    source_url TEXT NOT NULL,
+                    page_title TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    section_heading TEXT,
+                    content TEXT NOT NULL,
+                    content_type TEXT NOT NULL DEFAULT 'education',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(source_url, chunk_index)
+                )
+                """
+            )
+
+            cur.executemany(
+                """
+                INSERT INTO hfj_support_routes
+                (region_key, display_name, emergency_text, phone, website)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (region_key) DO NOTHING
+                """,
+                [
+                    (
+                        "ireland",
+                        "Ireland",
+                        "Call 112 or 999 if there is immediate danger.",
+                        "01 795 8280",
+                        "https://www2.hse.ie/services/human-trafficking/",
+                    ),
+                    (
+                        "uk",
+                        "United Kingdom",
+                        "Call 999 if there is immediate danger.",
+                        "0800 0121 700",
+                        "https://www.modernslavery.gov.uk/",
+                    ),
+                    (
+                        "united_states",
+                        "United States",
+                        "Call 911 if there is immediate danger.",
+                        "1-888-373-7888",
+                        "https://humantraffickinghotline.org/en/contact",
+                    ),
+                    (
+                        "canada",
+                        "Canada",
+                        "Call 911 if there is immediate danger.",
+                        "1-833-900-1010",
+                        "https://www.canadianhumantraffickinghotline.ca/",
+                    ),
+                    (
+                        "belgium",
+                        "Belgium",
+                        "Contact local emergency services if there is immediate danger.",
+                        None,
+                        "https://hopeforjustice.org/get-help/",
+                    ),
+                ],
+            )
+        conn.commit()
+
+
+def fetch_page_html(url: str) -> str:
+    response = requests.get(
+        url,
+        timeout=20,
+        headers={"User-Agent": USER_AGENT},
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def chunk_text(text: str, max_chars: int = 1200) -> list[str]:
+    text = normalize_whitespace(text)
+    if not text:
+        return []
+
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    chunks = []
+    current = ""
+
+    for p in paragraphs:
+        if len(current) + len(p) + 1 <= max_chars:
+            current = f"{current}\n{p}".strip()
+        else:
+            if current:
+                chunks.append(current)
+            if len(p) <= max_chars:
+                current = p
+            else:
+                # hard split very long paragraph
+                for i in range(0, len(p), max_chars):
+                    part = p[i:i + max_chars].strip()
+                    if part:
+                        chunks.append(part)
+                current = ""
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def normalize_whitespace(text: str) -> str:
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def parse_hfj_page(html: str, url: str) -> tuple[str, list[dict]]:
+    soup = BeautifulSoup(html, "lxml")
+
+    for tag in soup(["script", "style", "noscript", "iframe", "svg", "form"]):
+        tag.decompose()
+
+    for selector in ["header", "footer", "nav"]:
+        for tag in soup.select(selector):
+            tag.decompose()
+
+    page_title = "Hope for Justice"
+    h1 = soup.find("h1")
+    if h1:
+        page_title = normalize_whitespace(h1.get_text(" ", strip=True))
+    elif soup.title:
+        page_title = normalize_whitespace(soup.title.get_text(" ", strip=True))
+
+    nodes = soup.find_all(["h2", "h3", "p", "li"])
+    sections: list[dict] = []
+    current_heading = page_title
+    buffer: list[str] = []
+
+    def flush_buffer():
+        nonlocal buffer
+        if not buffer:
+            return
+        joined = "\n".join(buffer).strip()
+        for chunk in chunk_text(joined):
+            sections.append(
+                {
+                    "source_url": url,
+                    "page_title": page_title,
+                    "section_heading": current_heading,
+                    "content": chunk,
+                }
+            )
+        buffer = []
+
+    for node in nodes:
+        text = normalize_whitespace(node.get_text(" ", strip=True))
+        if not text or len(text) < 3:
+            continue
+
+        if node.name in ["h2", "h3"]:
+            flush_buffer()
+            current_heading = text
+        else:
+            # filter obvious junk
+            lowered = text.lower()
+            if lowered in {"accept", "privacy policy"}:
+                continue
+            buffer.append(text)
+
+    flush_buffer()
+    return page_title, sections
+
+
+def upsert_hfj_sections(sections: list[dict]):
+    if not sections:
+        return 0
+
+    rows = []
+    for idx, section in enumerate(sections, start=1):
+        rows.append(
+            (
+                section["source_url"],
+                section["page_title"],
+                idx,
+                section["section_heading"],
+                section["content"],
+                "education",
+            )
+        )
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            source_url = sections[0]["source_url"]
+            cur.execute(
+                "DELETE FROM hfj_content_chunks WHERE source_url = %s",
+                (source_url,),
+            )
+            cur.executemany(
+                """
+                INSERT INTO hfj_content_chunks
+                (source_url, page_title, chunk_index, section_heading, content, content_type)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                rows,
+            )
+        conn.commit()
+
+    return len(rows)
+
+
+def ingest_hfj_pages():
+    results = []
+    for url in HFJ_PAGE_SOURCES:
+        try:
+            html = fetch_page_html(url)
+            page_title, sections = parse_hfj_page(html, url)
+            count = upsert_hfj_sections(sections)
+            results.append(
+                {
+                    "url": url,
+                    "page_title": page_title,
+                    "chunks_ingested": count,
+                    "status": "ok",
+                }
+            )
+        except Exception as e:
+            results.append(
+                {
+                    "url": url,
+                    "status": "error",
+                    "error": str(e),
+                }
+            )
+    return results
+
+
+@app.on_event("startup")
+def startup_event():
+    init_db()
+    ingest_hfj_pages()
+
+
+def get_support_route(region_key: str):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT region_key, display_name, emergency_text, phone, website
+                FROM hfj_support_routes
+                WHERE region_key = %s
+                """,
+                (region_key,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "region_key": row[0],
+        "display_name": row[1],
+        "emergency_text": row[2],
+        "phone": row[3],
+        "website": row[4],
+    }
+
+
+def score_chunk(query: str, title: str, heading: str | None, content: str) -> float:
+    query_terms = [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 2]
+    if not query_terms:
+        return 0.0
+
+    haystacks = [
+        (title or "").lower(),
+        (heading or "").lower(),
+        (content or "").lower(),
+    ]
+
+    score = 0.0
+    for term in query_terms:
+        if term in haystacks[0]:
+            score += 4.0
+        if term in haystacks[1]:
+            score += 3.0
+        if term in haystacks[2]:
+            score += 1.0
+
+    # exact useful phrases
+    exact_phrases = [
+        "human trafficking",
+        "spot the signs",
+        "warning signs",
+        "get help",
+        "forced labour",
+        "sex trafficking",
+        "sexual exploitation",
+    ]
+    for phrase in exact_phrases:
+        if phrase in query.lower() and (
+            phrase in haystacks[0] or phrase in haystacks[1] or phrase in haystacks[2]
+        ):
+            score += 5.0
+
+    return score
+
+
+def find_match(query: str):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT source_url, page_title, section_heading, content
+                FROM hfj_content_chunks
+                """
+            )
+            rows = cur.fetchall()
+
+    best_row = None
+    best_score = 0.0
+
+    for row in rows:
+        score = score_chunk(query, row[1], row[2], row[3])
+        if score > best_score:
+            best_score = score
+            best_row = row
+
+    if not best_row or best_score < 2.0:
+        return None
+
+    return {
+        "source": best_row[0],
+        "title": best_row[1],
+        "section_heading": best_row[2],
+        "answer": best_row[3],
+    }
 
 
 def build_us_state_response(state_name: str):
@@ -572,6 +768,44 @@ def routes():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.get("/content-check")
+def content_check():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT source_url, page_title, COUNT(*)
+                    FROM hfj_content_chunks
+                    GROUP BY source_url, page_title
+                    ORDER BY page_title
+                    """
+                )
+                rows = cur.fetchall()
+
+        return {
+            "pages": [
+                {
+                    "source_url": row[0],
+                    "page_title": row[1],
+                    "chunk_count": row[2],
+                }
+                for row in rows
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.post("/reingest-hfj")
+def reingest_hfj():
+    try:
+        results = ingest_hfj_pages()
+        return {"status": "ok", "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingest error: {str(e)}")
 
 
 @app.post("/chat")
@@ -811,6 +1045,7 @@ def chat(req: ChatRequest):
             "source": match["source"],
             "type": "hfj",
             "title": match["title"],
+            "section_heading": match["section_heading"],
             "session_id": session_id,
         }
 
