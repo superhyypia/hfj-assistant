@@ -6,7 +6,7 @@ from openai import OpenAI
 
 app = FastAPI()
 
-# Enable CORS for browser UI
+# CORS (for browser UI)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,148 +24,82 @@ class ChatRequest(BaseModel):
 
 
 # ------------------------
-# MINI RAG KNOWLEDGE BASE
+# MINI RAG KNOWLEDGE
 # ------------------------
 HFJ_KNOWLEDGE = [
     {
-        "id": "what_is_trafficking",
         "title": "What is human trafficking?",
         "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": [
-            "what is human trafficking",
-            "what is trafficking",
-            "define trafficking",
-            "human trafficking meaning",
-        ],
+        "keywords": ["what is human trafficking", "define trafficking"],
         "answer": (
             "Human trafficking is the exploitation of another person for labour, "
-            "services, or commercial sex through force, fraud, or coercion. "
-            "It is not only about movement — the key issue is exploitation.\n\n"
-            "It can affect adults and children and includes labour trafficking, "
-            "sexual exploitation, domestic servitude, criminal exploitation, and forced marriage."
+            "services, or commercial sex through force, fraud, or coercion.\n\n"
+            "It is not just about movement — the key issue is exploitation."
         ),
     },
     {
-        "id": "spot_the_signs",
         "title": "Spot the signs",
         "source": "https://hopeforjustice.org/spot-the-signs/",
-        "keywords": [
-            "spot the signs",
-            "signs of trafficking",
-            "warning signs",
-            "how do i spot",
-        ],
+        "keywords": ["spot the signs", "warning signs", "how do i spot"],
         "answer": (
-            "Some common warning signs may include:\n\n"
-            "• Someone appears fearful, anxious, or unable to speak freely\n"
-            "• Another person controls their movements or identity documents\n"
-            "• They have little freedom of movement or seem dependent\n"
-            "• They may be unpaid or underpaid\n"
-            "• Poor living conditions or signs of neglect\n\n"
-            "Signs can vary depending on the type of exploitation."
+            "Common warning signs include:\n\n"
+            "• Fear, anxiety, or inability to speak freely\n"
+            "• Someone else controlling documents or movement\n"
+            "• Poor living conditions or lack of pay\n"
+            "• Dependency on another person\n\n"
+            "Signs vary depending on the type of exploitation."
         ),
     },
     {
-        "id": "get_help",
-        "title": "Get help",
-        "source": "https://hopeforjustice.org/get-help/",
-        "keywords": [
-            "get help",
-            "i need help",
-            "someone is being controlled",
-        ],
-        "answer": (
-            "If someone may be in immediate danger, contact emergency services first.\n\n"
-            "Tell me your country or state and I can guide you to the correct support route."
-        ),
-    },
-    {
-        "id": "labour_trafficking",
         "title": "Labour trafficking",
         "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": [
-            "labour trafficking",
-            "labor trafficking",
-            "forced labour",
-            "work exploitation",
-        ],
+        "keywords": ["labour trafficking", "forced labour"],
         "answer": (
-            "Labour trafficking happens when a person is exploited for work through force, fraud, or coercion.\n\n"
-            "It may involve low or no pay, threats, long hours, poor conditions, restricted movement, "
-            "or someone else controlling identity documents.\n\n"
-            "It can occur in agriculture, hospitality, construction, domestic work, and more."
+            "Labour trafficking involves exploitation through work.\n\n"
+            "It may include low pay, threats, long hours, and restricted movement."
         ),
     },
     {
-        "id": "sex_trafficking",
         "title": "Sex trafficking",
         "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": [
-            "sex trafficking",
-            "sexual exploitation",
-            "forced prostitution",
-        ],
+        "keywords": ["sex trafficking", "sexual exploitation"],
         "answer": (
-            "Sex trafficking involves exploiting a person for commercial sex through force, fraud, or coercion.\n\n"
-            "It may involve control, threats, manipulation, or violence. A person may appear monitored, "
-            "unable to speak freely, or controlled by another individual."
-        ),
-    },
-    {
-        "id": "reporting_guidance",
-        "title": "Reporting guidance",
-        "source": "https://hopeforjustice.org/get-help/",
-        "keywords": [
-            "how do i report",
-            "report trafficking",
-            "report exploitation",
-        ],
-        "answer": (
-            "If you suspect trafficking, do not confront a suspected trafficker.\n\n"
-            "If there is immediate danger, contact emergency services.\n\n"
-            "The safest next step is to use official reporting channels. "
-            "Tell me your location and I can guide you."
+            "Sex trafficking involves exploitation for commercial sex through "
+            "force, fraud, or coercion.\n\n"
+            "It may involve control, threats, or manipulation."
         ),
     },
 ]
 
 
-# ------------------------
-# HELPERS
-# ------------------------
-def normalize_text(text: str) -> str:
+def normalize(text):
     return text.lower().strip()
 
 
-def is_help_query(text: str) -> bool:
-    terms = ["help", "danger", "controlled", "trapped", "forced", "can't leave"]
-    return any(term in text for term in terms)
-
-
-def find_knowledge_match(text: str):
-    best_match = None
-    best_score = 0
-
+def find_match(text):
     for item in HFJ_KNOWLEDGE:
-        score = sum(1 for kw in item["keywords"] if kw in text)
-        if score > best_score:
-            best_score = score
-            best_match = item
-
-    return best_match if best_score > 0 else None
+        for kw in item["keywords"]:
+            if kw in text:
+                return item
+    return None
 
 
-def get_location_response(text: str):
+def is_help(text):
+    return any(x in text for x in ["help", "danger", "controlled", "trapped"])
+
+
+def location(text):
     if "california" in text:
         return {
             "reply": (
                 "If you are in California:\n\n"
-                "• Emergency: Call 911\n"
+                "• Call 911 in an emergency\n"
                 "• Hotline: 1-888-373-7888\n"
                 "• Text: 233733\n"
                 "• https://humantraffickinghotline.org"
             ),
             "source": "https://humantraffickinghotline.org",
+            "type": "hfj"
         }
 
     if "ireland" in text:
@@ -173,17 +107,15 @@ def get_location_response(text: str):
             "reply": (
                 "If you are in Ireland:\n\n"
                 "• Emergency: 112 or 999\n"
-                "• Contact local authorities or approved services"
+                "• Contact local services"
             ),
             "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj"
         }
 
     return None
 
 
-# ------------------------
-# ROUTES
-# ------------------------
 @app.get("/")
 def root():
     return {"message": "HFJ Assistant is running"}
@@ -191,50 +123,44 @@ def root():
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    user_input = req.message
-    text = normalize_text(user_input)
+    text = normalize(req.message)
 
-    # 1. Location
-    loc = get_location_response(text)
+    # Location
+    loc = location(text)
     if loc:
         return loc
 
-    # 2. Help flow
-    if is_help_query(text):
+    # Help flow
+    if is_help(text):
         return {
             "reply": (
-                "I’m sorry this may be happening. If someone is in immediate danger, "
-                "contact emergency services.\n\n"
-                "Tell me your country or state and I’ll guide you."
+                "If someone is in immediate danger, contact emergency services.\n\n"
+                "Tell me your location and I can guide you."
             ),
             "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj"
         }
 
-    # 3. Mini-RAG
-    match = find_knowledge_match(text)
+    # Mini RAG
+    match = find_match(text)
     if match:
         return {
             "reply": match["answer"],
             "source": match["source"],
-            "title": match["title"],
+            "type": "hfj"
         }
 
-    # 4. AI fallback
+    # AI fallback
     if not client:
-        raise HTTPException(status_code=500, detail="Missing OpenAI key")
+        raise HTTPException(status_code=500, detail="Missing API key")
 
     response = client.responses.create(
         model="gpt-4o",
-        input=f"""
-You are the Hope for Justice assistant.
-
-Provide clear, structured, supportive answers about trafficking.
-
-Question: {user_input}
-"""
+        input=f"Explain clearly: {req.message}"
     )
 
     return {
         "reply": response.output_text,
         "source": "AI-generated",
+        "type": "ai"
     }
