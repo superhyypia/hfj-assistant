@@ -4,7 +4,6 @@ from pydantic import BaseModel
 import os
 import uuid
 import re
-import json
 import pycountry
 import psycopg
 from openai import OpenAI
@@ -63,6 +62,32 @@ HFJ_KNOWLEDGE = [
             "• Poor living conditions or lack of pay\n"
             "• Dependency on another person\n\n"
             "Signs vary depending on the type of exploitation."
+        ),
+    },
+    {
+        "title": "Labour trafficking",
+        "source": "https://hopeforjustice.org/human-trafficking/",
+        "keywords": [
+            "labour trafficking",
+            "labor trafficking",
+            "forced labour",
+            "forced labor",
+        ],
+        "answer": (
+            "Labour trafficking involves exploitation through work.\n\n"
+            "It may include low pay, threats, long hours, poor conditions, and restricted movement."
+        ),
+    },
+    {
+        "title": "Sex trafficking",
+        "source": "https://hopeforjustice.org/human-trafficking/",
+        "keywords": [
+            "sex trafficking",
+            "sexual exploitation",
+        ],
+        "answer": (
+            "Sex trafficking involves exploitation for commercial sex through force, fraud, or coercion.\n\n"
+            "It may involve control, threats, or manipulation."
         ),
     },
 ]
@@ -197,41 +222,51 @@ def init_db():
                 """
             )
 
-            cur.execute("SELECT COUNT(*) FROM hfj_support_routes")
-            count = cur.fetchone()[0]
-
-            if count == 0:
-                cur.executemany(
-                    """
-                    INSERT INTO hfj_support_routes
-                    (region_key, display_name, emergency_text, phone, website)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (region_key) DO NOTHING
-                    """,
-                    [
-                        (
-                            "ireland",
-                            "Ireland",
-                            "Call 112 or 999 if there is immediate danger.",
-                            "01 795 8280",
-                            "https://www2.hse.ie/services/human-trafficking/",
-                        ),
-                        (
-                            "uk",
-                            "United Kingdom",
-                            "Call 999 if there is immediate danger.",
-                            "0800 0121 700",
-                            "https://www.modernslavery.gov.uk/",
-                        ),
-                        (
-                            "united_states",
-                            "United States",
-                            "Call 911 if there is immediate danger.",
-                            "1-888-373-7888",
-                            "https://humantraffickinghotline.org/en/contact",
-                        ),
-                    ],
-                )
+            cur.executemany(
+                """
+                INSERT INTO hfj_support_routes
+                (region_key, display_name, emergency_text, phone, website)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (region_key) DO NOTHING
+                """,
+                [
+                    (
+                        "ireland",
+                        "Ireland",
+                        "Call 112 or 999 if there is immediate danger.",
+                        "01 795 8280",
+                        "https://www2.hse.ie/services/human-trafficking/",
+                    ),
+                    (
+                        "uk",
+                        "United Kingdom",
+                        "Call 999 if there is immediate danger.",
+                        "0800 0121 700",
+                        "https://www.modernslavery.gov.uk/",
+                    ),
+                    (
+                        "united_states",
+                        "United States",
+                        "Call 911 if there is immediate danger.",
+                        "1-888-373-7888",
+                        "https://humantraffickinghotline.org/en/contact",
+                    ),
+                    (
+                        "canada",
+                        "Canada",
+                        "Call 911 if there is immediate danger.",
+                        "1-833-900-1010",
+                        "https://www.canadianhumantraffickinghotline.ca/",
+                    ),
+                    (
+                        "belgium",
+                        "Belgium",
+                        "Contact local emergency services if there is immediate danger.",
+                        None,
+                        "https://hopeforjustice.org/get-help/",
+                    ),
+                ],
+            )
         conn.commit()
 
 
@@ -269,6 +304,32 @@ def normalize(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
 
+def normalize_country_key(name: str) -> str:
+    name = name.lower().strip()
+
+    mapping = {
+        "uk": "uk",
+        "united kingdom": "uk",
+        "great britain": "uk",
+        "england": "uk",
+        "scotland": "uk",
+        "wales": "uk",
+        "northern ireland": "uk",
+        "us": "united_states",
+        "usa": "united_states",
+        "u.s.": "united_states",
+        "u.s.a.": "united_states",
+        "united states": "united_states",
+        "united states of america": "united_states",
+    }
+
+    return mapping.get(name, name.replace(" ", "_"))
+
+
+def slugify_state(state_name: str) -> str:
+    return state_name.lower().replace(" ", "-")
+
+
 def find_match(text: str):
     best = None
     best_score = 0
@@ -301,6 +362,16 @@ def is_help_trigger(text: str) -> bool:
         "i'm being trafficked",
     ]
     return any(t in text for t in triggers)
+
+
+def is_yes(text: str) -> bool:
+    yes_words = ["yes", "yeah", "y", "urgent", "in danger", "immediate danger"]
+    return any(word == text or word in text for word in yes_words)
+
+
+def is_no(text: str) -> bool:
+    no_words = ["no", "nope", "not right now", "not immediate", "safe for now"]
+    return any(word == text or word in text for word in no_words)
 
 
 def detect_us_state(text: str, original: str) -> dict | None:
@@ -369,6 +440,80 @@ def detect_location(user_input: str, text: str) -> dict | None:
     return None
 
 
+def build_us_state_response(state_name: str):
+    state_slug = slugify_state(state_name)
+    state_page = f"https://humantraffickinghotline.org/en/statistics/{state_slug}"
+
+    return {
+        "reply": (
+            f"If you are in {state_name}:\n\n"
+            "• Call 911 if there is immediate danger\n"
+            "• National Human Trafficking Hotline: 1-888-373-7888\n"
+            "• Text: 233733\n"
+            "• Live chat and online reporting are also available\n\n"
+            f"I’ve also included the official {state_name} page and the local services directory."
+        ),
+        "source": state_page,
+        "extra_sources": [
+            "https://humantraffickinghotline.org/en/contact",
+            "https://humantraffickinghotline.org/en/find-local-services",
+        ],
+        "type": "hfj",
+        "title": f"Support in {state_name}",
+    }
+
+
+def build_country_response(country_name: str):
+    country_key = normalize_country_key(country_name)
+    route = get_support_route(country_key)
+
+    if route:
+        reply_lines = [
+            f"If you are in {route['display_name']}:",
+            "",
+            f"• {route['emergency_text']}",
+        ]
+
+        if route["phone"]:
+            reply_lines.append(f"• Support contact: {route['phone']}")
+
+        if route["website"]:
+            reply_lines.append(f"• Website: {route['website']}")
+
+        return {
+            "reply": "\n".join(reply_lines),
+            "source": route["website"] or "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": f"Support in {route['display_name']}",
+        }
+
+    display_name = country_name.strip()
+    return {
+        "reply": (
+            f"If you are in {display_name}:\n\n"
+            "• If there is immediate danger, contact local emergency services right away\n"
+            "• Seek help from official local authorities or trusted local support organisations\n\n"
+            "I do not want to guess country-specific contact details. "
+            "I’ve included Hope for Justice help information below while you seek the appropriate local official support."
+        ),
+        "source": "https://hopeforjustice.org/get-help/",
+        "type": "hfj",
+        "title": f"Support in {display_name}",
+    }
+
+
+def build_confirmation_prompt(candidate: dict, session_id: str):
+    value = candidate["value"]
+    label = "state" if candidate["kind"] == "state" else "country"
+    return {
+        "reply": f"Did you mean {value} as your {label}? Please reply yes or no.",
+        "source": "https://hopeforjustice.org/get-help/",
+        "type": "hfj",
+        "title": f"Confirm {label}",
+        "session_id": session_id,
+    }
+
+
 @app.get("/")
 def root():
     return {"message": "HFJ Assistant is running"}
@@ -399,67 +544,265 @@ def db_check():
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
+@app.get("/routes")
+def routes():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT region_key, display_name, emergency_text, phone, website
+                    FROM hfj_support_routes
+                    ORDER BY display_name
+                    """
+                )
+                rows = cur.fetchall()
+
+        return {
+            "routes": [
+                {
+                    "region_key": row[0],
+                    "display_name": row[1],
+                    "emergency_text": row[2],
+                    "phone": row[3],
+                    "website": row[4],
+                }
+                for row in rows
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
 @app.post("/chat")
 def chat(req: ChatRequest):
     user_input = req.message.strip()
     text = normalize(user_input)
-    session_id = req.session_id or str(uuid.uuid4())
 
     if not user_input:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    # Very simple test use of DB-backed support routing
+    session_id = req.session_id or str(uuid.uuid4())
+    session = SESSION_STATE.setdefault(
+        session_id,
+        {
+            "stage": None,
+            "pending_candidate": None,
+            "saved_location": None,
+        },
+    )
+
+    if session["stage"] == "awaiting_location_confirmation":
+        if is_yes(text):
+            candidate = session.get("pending_candidate")
+            session["stage"] = None
+            session["pending_candidate"] = None
+            session["saved_location"] = None
+
+            if not candidate:
+                return {
+                    "reply": "Please tell me the country or state so I can guide you properly.",
+                    "source": "https://hopeforjustice.org/get-help/",
+                    "type": "hfj",
+                    "title": "Location needed",
+                    "session_id": session_id,
+                }
+
+            if candidate["kind"] == "state":
+                result = build_us_state_response(candidate["value"])
+            else:
+                result = build_country_response(candidate["value"])
+
+            result["session_id"] = session_id
+            return result
+
+        if is_no(text):
+            session["stage"] = "awaiting_location"
+            session["pending_candidate"] = None
+            session["saved_location"] = None
+            return {
+                "reply": (
+                    "Thanks. Please tell me the country or state more explicitly, "
+                    "for example Minnesota, California, Ireland, Canada, Belgium, Vietnam, or the UK."
+                ),
+                "source": "https://hopeforjustice.org/get-help/",
+                "type": "hfj",
+                "title": "Location needed",
+                "session_id": session_id,
+            }
+
+        return {
+            "reply": "Please reply yes or no.",
+            "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": "Location confirmation",
+            "session_id": session_id,
+        }
+
+    if session["stage"] == "awaiting_danger":
+        if is_yes(text):
+            saved_location = session.get("saved_location")
+
+            if saved_location:
+                if saved_location["confidence"] == "high":
+                    session["stage"] = None
+                    session["pending_candidate"] = None
+                    session["saved_location"] = None
+
+                    if saved_location["kind"] == "state":
+                        result = build_us_state_response(saved_location["value"])
+                    else:
+                        result = build_country_response(saved_location["value"])
+
+                    result["session_id"] = session_id
+                    result["reply"] = (
+                        "If someone is in immediate danger, contact emergency services right away.\n\n"
+                        + result["reply"]
+                    )
+                    return result
+
+                session["stage"] = "awaiting_location_confirmation"
+                session["pending_candidate"] = saved_location
+                session["saved_location"] = None
+                return {
+                    "reply": (
+                        "If someone is in immediate danger, contact emergency services right away.\n\n"
+                        f"Did you mean {saved_location['value']} as your location? Please reply yes or no."
+                    ),
+                    "source": "https://hopeforjustice.org/get-help/",
+                    "type": "hfj",
+                    "title": "Confirm location",
+                    "session_id": session_id,
+                }
+
+            session["stage"] = "awaiting_location"
+            return {
+                "reply": (
+                    "If someone is in immediate danger, contact emergency services right away.\n\n"
+                    "Please now tell me the country or state so I can show the most relevant support route."
+                ),
+                "source": "https://hopeforjustice.org/get-help/",
+                "type": "hfj",
+                "title": "Emergency support",
+                "session_id": session_id,
+            }
+
+        if is_no(text):
+            saved_location = session.get("saved_location")
+
+            if saved_location:
+                if saved_location["confidence"] == "high":
+                    session["stage"] = None
+                    session["pending_candidate"] = None
+                    session["saved_location"] = None
+
+                    if saved_location["kind"] == "state":
+                        result = build_us_state_response(saved_location["value"])
+                    else:
+                        result = build_country_response(saved_location["value"])
+
+                    result["session_id"] = session_id
+                    return result
+
+                session["stage"] = "awaiting_location_confirmation"
+                session["pending_candidate"] = saved_location
+                session["saved_location"] = None
+                return build_confirmation_prompt(saved_location, session_id)
+
+            session["stage"] = "awaiting_location"
+            return {
+                "reply": (
+                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, Canada, Belgium, Vietnam, or the UK."
+                ),
+                "source": "https://hopeforjustice.org/get-help/",
+                "type": "hfj",
+                "title": "Location needed",
+                "session_id": session_id,
+            }
+
+        return {
+            "reply": "Please reply yes or no: is anyone in immediate danger right now?",
+            "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": "Immediate danger check",
+            "session_id": session_id,
+        }
+
+    if session["stage"] == "awaiting_location":
+        location = detect_location(user_input, text)
+
+        if location:
+            if location["confidence"] == "high":
+                session["stage"] = None
+                session["pending_candidate"] = None
+                session["saved_location"] = None
+
+                if location["kind"] == "state":
+                    result = build_us_state_response(location["value"])
+                else:
+                    result = build_country_response(location["value"])
+
+                result["session_id"] = session_id
+                return result
+
+            session["stage"] = "awaiting_location_confirmation"
+            session["pending_candidate"] = location
+            session["saved_location"] = None
+            return build_confirmation_prompt(location, session_id)
+
+        return {
+            "reply": (
+                "Thank you. I may not have fully recognized that location.\n\n"
+                "If there is immediate danger, contact local emergency services right away. "
+                "You can also seek help from official local authorities or trusted organisations.\n\n"
+                "I’ve included Hope for Justice help information below."
+            ),
+            "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": "General location guidance",
+            "session_id": session_id,
+        }
+
     location = detect_location(user_input, text)
-    if location and location["kind"] == "country":
-        country_name = location["value"].lower()
+    if location:
+        if location["confidence"] == "high":
+            if location["kind"] == "state":
+                result = build_us_state_response(location["value"])
+            else:
+                result = build_country_response(location["value"])
 
-        if country_name == "ireland":
-            route = get_support_route("ireland")
-            if route:
-                return {
-                    "reply": (
-                        f"If you are in {route['display_name']}:\n\n"
-                        f"• {route['emergency_text']}\n"
-                        f"• Support contact: {route['phone']}\n"
-                        f"• Website: {route['website']}"
-                    ),
-                    "source": route["website"],
-                    "type": "hfj",
-                    "title": f"Support in {route['display_name']}",
-                    "session_id": session_id,
-                }
+            result["session_id"] = session_id
+            return result
 
-        if country_name in ["united kingdom", "great britain", "england", "scotland", "wales", "northern ireland"]:
-            route = get_support_route("uk")
-            if route:
-                return {
-                    "reply": (
-                        f"If you are in {route['display_name']}:\n\n"
-                        f"• {route['emergency_text']}\n"
-                        f"• Support contact: {route['phone']}\n"
-                        f"• Website: {route['website']}"
-                    ),
-                    "source": route["website"],
-                    "type": "hfj",
-                    "title": f"Support in {route['display_name']}",
-                    "session_id": session_id,
-                }
+        session["stage"] = "awaiting_location_confirmation"
+        session["pending_candidate"] = location
+        session["saved_location"] = None
+        return build_confirmation_prompt(location, session_id)
 
-        if country_name in ["united states", "united states of america"]:
-            route = get_support_route("united_states")
-            if route:
-                return {
-                    "reply": (
-                        f"If you are in {route['display_name']}:\n\n"
-                        f"• {route['emergency_text']}\n"
-                        f"• National Human Trafficking Hotline: {route['phone']}\n"
-                        f"• Website: {route['website']}"
-                    ),
-                    "source": route["website"],
-                    "type": "hfj",
-                    "title": f"Support in {route['display_name']}",
-                    "session_id": session_id,
-                }
+    if is_help_trigger(text):
+        detected_location = detect_location(user_input, text)
+        session["stage"] = "awaiting_danger"
+        session["pending_candidate"] = None
+        session["saved_location"] = detected_location
+
+        if detected_location and detected_location["confidence"] == "high":
+            location_line = f"I understand you may be in {detected_location['value']}.\n\n"
+        elif detected_location:
+            location_line = f"I may have picked up {detected_location['value']} as your location.\n\n"
+        else:
+            location_line = ""
+
+        return {
+            "reply": (
+                "I’m sorry this may be happening.\n\n"
+                f"{location_line}"
+                "Is anyone in immediate danger right now? Please reply yes or no."
+            ),
+            "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": "Immediate danger check",
+            "session_id": session_id,
+        }
 
     match = find_match(text)
     if match:
