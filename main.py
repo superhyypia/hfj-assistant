@@ -284,6 +284,25 @@ def is_help_trigger(text: str) -> bool:
     return any(t in text for t in triggers)
 
 
+def looks_like_general_question(text: str) -> bool:
+    triggers = [
+        "what is",
+        "what's",
+        "how do i spot",
+        "spot the signs",
+        "signs of trafficking",
+        "human trafficking",
+        "labour trafficking",
+        "labor trafficking",
+        "sex trafficking",
+        "sexual exploitation",
+        "what are the signs",
+        "define trafficking",
+        "meaning of trafficking",
+    ]
+    return any(t in text for t in triggers)
+
+
 def is_junk(text: str) -> bool:
     t = text.lower()
     return any(pattern in t for pattern in JUNK_PATTERNS)
@@ -655,7 +674,16 @@ def get_support_route(region_key: str):
     }
 
 
-def score_chunk(query: str, title: str, heading: str | None, content: str, source_site: str, region: str, content_type: str, user_region: str | None) -> float:
+def score_chunk(
+    query: str,
+    title: str,
+    heading: str | None,
+    content: str,
+    source_site: str,
+    region: str,
+    content_type: str,
+    user_region: str | None,
+) -> float:
     query_terms = [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 2]
     if not query_terms:
         return 0.0
@@ -980,6 +1008,11 @@ def chat(req: ChatRequest):
             "saved_location": None,
         },
     )
+
+    # Break out of pending support flow if the user asks a general education question.
+    if session["stage"] == "awaiting_location" and looks_like_general_question(text):
+        session["stage"] = None
+        session["saved_location"] = None
 
     if session["stage"] == "awaiting_location":
         location = detect_location(user_input, text)
