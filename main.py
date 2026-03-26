@@ -250,13 +250,10 @@ def is_no(text: str) -> bool:
 
 
 def detect_us_state(text: str, original: str) -> dict | None:
-    # High-confidence: full state name
     for key, value in US_STATES.items():
         if re.search(rf"\b{re.escape(key)}\b", text):
             return {"kind": "state", "value": value, "confidence": "high"}
 
-    # Medium-confidence: only uppercase abbreviations from original user input
-    # This avoids false positives like "in" -> Indiana or "or" -> Oregon
     upper_tokens = re.findall(r"\b[A-Z]{2}\b", original)
     for token in upper_tokens:
         token_lower = token.lower()
@@ -273,7 +270,6 @@ def detect_us_state(text: str, original: str) -> dict | None:
 def detect_country_with_library(user_input: str) -> dict | None:
     text = user_input.strip().lower()
 
-    # High-confidence: country name appears as a whole phrase in the input
     for country in pycountry.countries:
         names_to_check = {country.name.lower()}
 
@@ -293,7 +289,6 @@ def detect_country_with_library(user_input: str) -> dict | None:
                     "confidence": "high",
                 }
 
-    # Medium-confidence: fuzzy match for short inputs like "Canada" or "Vietnam"
     try:
         result = pycountry.countries.search_fuzzy(user_input.strip())
         if result:
@@ -435,7 +430,6 @@ def build_country_response(country_name: str):
             "title": "Support in the United States",
         }
 
-    # Safe global fallback
     display_name = country_name.strip()
     return {
         "reply": (
@@ -487,6 +481,7 @@ def chat(req: ChatRequest):
         {
             "stage": None,
             "pending_candidate": None,
+            "saved_location": None,
         },
     )
 
@@ -496,6 +491,7 @@ def chat(req: ChatRequest):
             candidate = session.get("pending_candidate")
             session["stage"] = None
             session["pending_candidate"] = None
+            session["saved_location"] = None
 
             if not candidate:
                 return {
@@ -517,10 +513,11 @@ def chat(req: ChatRequest):
         if is_no(text):
             session["stage"] = "awaiting_location"
             session["pending_candidate"] = None
+            session["saved_location"] = None
             return {
                 "reply": (
                     "Thanks. Please tell me the country or state more explicitly, "
-                    "for example Minnesota, California, Ireland, Canada, Vietnam, or the UK."
+                    "for example Minnesota, California, Ireland, Canada, Belgium, Vietnam, or the UK."
                 ),
                 "source": "https://hopeforjustice.org/get-help/",
                 "type": "hfj",
@@ -539,6 +536,40 @@ def chat(req: ChatRequest):
     # Help flow: danger check
     if session["stage"] == "awaiting_danger":
         if is_yes(text):
+            saved_location = session.get("saved_location")
+
+            if saved_location:
+                if saved_location["confidence"] == "high":
+                    session["stage"] = None
+                    session["pending_candidate"] = None
+                    session["saved_location"] = None
+
+                    if saved_location["kind"] == "state":
+                        result = build_us_state_response(saved_location["value"])
+                    else:
+                        result = build_country_response(saved_location["value"])
+
+                    result["session_id"] = session_id
+                    result["reply"] = (
+                        "If someone is in immediate danger, contact emergency services right away.\n\n"
+                        + result["reply"]
+                    )
+                    return result
+
+                session["stage"] = "awaiting_location_confirmation"
+                session["pending_candidate"] = saved_location
+                session["saved_location"] = None
+                return {
+                    "reply": (
+                        "If someone is in immediate danger, contact emergency services right away.\n\n"
+                        f"Did you mean {saved_location['value']} as your location? Please reply yes or no."
+                    ),
+                    "source": "https://hopeforjustice.org/get-help/",
+                    "type": "hfj",
+                    "title": "Confirm location",
+                    "session_id": session_id,
+                }
+
             session["stage"] = "awaiting_location"
             return {
                 "reply": (
@@ -552,10 +583,31 @@ def chat(req: ChatRequest):
             }
 
         if is_no(text):
+            saved_location = session.get("saved_location")
+
+            if saved_location:
+                if saved_location["confidence"] == "high":
+                    session["stage"] = None
+                    session["pending_candidate"] = None
+                    session["saved_location"] = None
+
+                    if saved_location["kind"] == "state":
+                        result = build_us_state_response(saved_location["value"])
+                    else:
+                        result = build_country_response(saved_location["value"])
+
+                    result["session_id"] = session_id
+                    return result
+
+                session["stage"] = "awaiting_location_confirmation"
+                session["pending_candidate"] = saved_location
+                session["saved_location"] = None
+                return build_confirmation_prompt(saved_location, session_id)
+
             session["stage"] = "awaiting_location"
             return {
                 "reply": (
-                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, Canada, Vietnam, or the UK."
+                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, Canada, Belgium, Vietnam, or the UK."
                 ),
                 "source": "https://hopeforjustice.org/get-help/",
                 "type": "hfj",
@@ -579,6 +631,7 @@ def chat(req: ChatRequest):
             if location["confidence"] == "high":
                 session["stage"] = None
                 session["pending_candidate"] = None
+                session["saved_location"] = None
 
                 if location["kind"] == "state":
                     result = build_us_state_response(location["value"])
@@ -590,6 +643,7 @@ def chat(req: ChatRequest):
 
             session["stage"] = "awaiting_location_confirmation"
             session["pending_candidate"] = location
+            session["saved_location"] = None
             return build_confirmation_prompt(location, session_id)
 
         return {
@@ -619,15 +673,27 @@ def chat(req: ChatRequest):
 
         session["stage"] = "awaiting_location_confirmation"
         session["pending_candidate"] = location
+        session["saved_location"] = None
         return build_confirmation_prompt(location, session_id)
 
     # Start guided help flow
     if is_help_trigger(text):
+        detected_location = detect_location(user_input, text)
         session["stage"] = "awaiting_danger"
         session["pending_candidate"] = None
+        session["saved_location"] = detected_location
+
+        if detected_location and detected_location["confidence"] == "high":
+            location_line = f"I understand you may be in {detected_location['value']}.\n\n"
+        elif detected_location:
+            location_line = f"I may have picked up {detected_location['value']} as your location.\n\n"
+        else:
+            location_line = ""
+
         return {
             "reply": (
                 "I’m sorry this may be happening.\n\n"
+                f"{location_line}"
                 "Is anyone in immediate danger right now? Please reply yes or no."
             ),
             "source": "https://hopeforjustice.org/get-help/",
