@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import os
 import uuid
 import re
+import json
 from openai import OpenAI
 
 app = FastAPI()
@@ -19,6 +20,7 @@ app.add_middleware(
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key) if api_key else None
 
+# Simple in-memory session state for MVP
 SESSION_STATE = {}
 
 
@@ -31,7 +33,12 @@ HFJ_KNOWLEDGE = [
     {
         "title": "What is human trafficking?",
         "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": ["what is human trafficking", "define trafficking", "what is trafficking"],
+        "keywords": [
+            "what is human trafficking",
+            "what is trafficking",
+            "define trafficking",
+            "human trafficking meaning",
+        ],
         "answer": (
             "Human trafficking is the exploitation of another person for labour, "
             "services, or commercial sex through force, fraud, or coercion.\n\n"
@@ -41,7 +48,12 @@ HFJ_KNOWLEDGE = [
     {
         "title": "Spot the signs",
         "source": "https://hopeforjustice.org/spot-the-signs/",
-        "keywords": ["spot the signs", "warning signs", "how do i spot", "signs of trafficking"],
+        "keywords": [
+            "spot the signs",
+            "warning signs",
+            "how do i spot",
+            "signs of trafficking",
+        ],
         "answer": (
             "Common warning signs include:\n\n"
             "• Fear, anxiety, or inability to speak freely\n"
@@ -54,7 +66,12 @@ HFJ_KNOWLEDGE = [
     {
         "title": "Labour trafficking",
         "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": ["labour trafficking", "forced labour", "labor trafficking"],
+        "keywords": [
+            "labour trafficking",
+            "labor trafficking",
+            "forced labour",
+            "forced labor",
+        ],
         "answer": (
             "Labour trafficking involves exploitation through work.\n\n"
             "It may include low pay, threats, long hours, poor conditions, and restricted movement."
@@ -63,10 +80,12 @@ HFJ_KNOWLEDGE = [
     {
         "title": "Sex trafficking",
         "source": "https://hopeforjustice.org/human-trafficking/",
-        "keywords": ["sex trafficking", "sexual exploitation"],
+        "keywords": [
+            "sex trafficking",
+            "sexual exploitation",
+        ],
         "answer": (
-            "Sex trafficking involves exploitation for commercial sex through "
-            "force, fraud, or coercion.\n\n"
+            "Sex trafficking involves exploitation for commercial sex through force, fraud, or coercion.\n\n"
             "It may involve control, threats, or manipulation."
         ),
     },
@@ -190,7 +209,9 @@ COUNTRY_KEYWORDS = {
     "northern ireland": "United Kingdom",
     "united states": "United States",
     "usa": "United States",
+    "u.s.a.": "United States",
     "us": "United States",
+    "u.s.": "United States",
 }
 
 
@@ -245,12 +266,10 @@ def is_no(text: str) -> bool:
 
 
 def detect_us_state(text: str) -> str | None:
-    # Full state names first
     for key, value in US_STATES.items():
-        if key in text:
+        if re.search(rf"\b{re.escape(key)}\b", text):
             return value
 
-    # Abbreviations like "MN" or "CA"
     tokens = re.findall(r"\b[a-z]{2}\b", text.lower())
     for token in tokens:
         if token in STATE_ABBREVIATIONS:
@@ -259,17 +278,46 @@ def detect_us_state(text: str) -> str | None:
     return None
 
 
-def detect_country(text: str) -> str | None:
+def detect_country_from_keywords(text: str) -> str | None:
     for key, value in COUNTRY_KEYWORDS.items():
         if re.search(rf"\b{re.escape(key)}\b", text):
             return value
     return None
 
 
+def detect_country_with_openai(user_input: str) -> str | None:
+    if not client:
+        return None
+
+    try:
+        response = client.responses.create(
+            model="gpt-4o",
+            input=f"""
+Extract the country mentioned in this message.
+
+Rules:
+- Return JSON only.
+- Format: {{"country": "<country name or null>"}}
+- If there is no country, return {{"country": null}}.
+- Do not guess a U.S. state as a country.
+
+Message: {user_input}
+"""
+        )
+
+        text = response.output_text.strip()
+        data = json.loads(text)
+        country = data.get("country")
+        if isinstance(country, str) and country.strip():
+            return country.strip()
+        return None
+    except Exception:
+        return None
+
+
 def build_us_state_response(state_name: str):
     state_slug = slugify_state(state_name)
     state_page = f"https://humantraffickinghotline.org/en/statistics/{state_slug}"
-    local_services = "https://humantraffickinghotline.org/en/find-local-services"
 
     return {
         "reply": (
@@ -283,7 +331,7 @@ def build_us_state_response(state_name: str):
         "source": state_page,
         "extra_sources": [
             "https://humantraffickinghotline.org/en/contact",
-            local_services,
+            "https://humantraffickinghotline.org/en/find-local-services",
         ],
         "type": "hfj",
         "title": f"Support in {state_name}",
@@ -291,7 +339,9 @@ def build_us_state_response(state_name: str):
 
 
 def build_country_response(country_name: str):
-    if country_name == "Ireland":
+    normalized = country_name.strip().lower()
+
+    if normalized == "ireland":
         return {
             "reply": (
                 "If you are in Ireland:\n\n"
@@ -304,7 +354,7 @@ def build_country_response(country_name: str):
             "title": "Support in Ireland",
         }
 
-    if country_name == "United Kingdom":
+    if normalized in ["united kingdom", "uk", "england", "scotland", "wales", "northern ireland"]:
         return {
             "reply": (
                 "If you are in the UK:\n\n"
@@ -317,7 +367,7 @@ def build_country_response(country_name: str):
             "title": "Support in the UK",
         }
 
-    if country_name == "United States":
+    if normalized in ["united states", "usa", "us"]:
         return {
             "reply": (
                 "If you are in the United States:\n\n"
@@ -334,6 +384,35 @@ def build_country_response(country_name: str):
             "type": "hfj",
             "title": "Support in the United States",
         }
+
+    # Generic global fallback — acknowledge country, but do not invent contacts
+    display_name = country_name.strip()
+    return {
+        "reply": (
+            f"If you are in {display_name}:\n\n"
+            "• If there is immediate danger, contact local emergency services right away\n"
+            "• Seek help from official local authorities or trusted local support organisations\n\n"
+            "I do not want to guess country-specific contact details. "
+            "I’ve included Hope for Justice help information below while you seek the appropriate local official support."
+        ),
+        "source": "https://hopeforjustice.org/get-help/",
+        "type": "hfj",
+        "title": f"Support in {display_name}",
+    }
+
+
+def detect_location(user_input: str, text: str):
+    state_name = detect_us_state(text)
+    if state_name:
+        return {"kind": "state", "value": state_name}
+
+    keyword_country = detect_country_from_keywords(text)
+    if keyword_country:
+        return {"kind": "country", "value": keyword_country}
+
+    ai_country = detect_country_with_openai(user_input)
+    if ai_country:
+        return {"kind": "country", "value": ai_country}
 
     return None
 
@@ -378,7 +457,7 @@ def chat(req: ChatRequest):
             session["stage"] = "awaiting_location"
             return {
                 "reply": (
-                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, or the UK."
+                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, Vietnam, or the UK."
                 ),
                 "source": "https://hopeforjustice.org/get-help/",
                 "type": "hfj",
@@ -396,25 +475,22 @@ def chat(req: ChatRequest):
 
     # Guided help flow: waiting for location
     if session["stage"] == "awaiting_location":
-        state_name = detect_us_state(text)
-        if state_name:
+        location = detect_location(user_input, text)
+        if location:
             session["stage"] = None
-            result = build_us_state_response(state_name)
+
+            if location["kind"] == "state":
+                result = build_us_state_response(location["value"])
+            else:
+                result = build_country_response(location["value"])
+
             result["session_id"] = session_id
             return result
-
-        country_name = detect_country(text)
-        if country_name:
-            session["stage"] = None
-            result = build_country_response(country_name)
-            if result:
-                result["session_id"] = session_id
-                return result
 
         return {
             "reply": (
                 "Please tell me the country or state so I can guide you properly. "
-                "For example: Minnesota, California, Ireland, or UK."
+                "For example: Minnesota, California, Ireland, Vietnam, or UK."
             ),
             "source": "https://hopeforjustice.org/get-help/",
             "type": "hfj",
@@ -423,18 +499,15 @@ def chat(req: ChatRequest):
         }
 
     # Direct location handling
-    state_name = detect_us_state(text)
-    if state_name:
-        result = build_us_state_response(state_name)
+    location = detect_location(user_input, text)
+    if location:
+        if location["kind"] == "state":
+            result = build_us_state_response(location["value"])
+        else:
+            result = build_country_response(location["value"])
+
         result["session_id"] = session_id
         return result
-
-    country_name = detect_country(text)
-    if country_name:
-        result = build_country_response(country_name)
-        if result:
-            result["session_id"] = session_id
-            return result
 
     # Start guided help flow
     if is_help_trigger(text):
