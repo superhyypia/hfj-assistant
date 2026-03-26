@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import uuid
+import re
 from openai import OpenAI
 
 app = FastAPI()
@@ -18,7 +19,6 @@ app.add_middleware(
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key) if api_key else None
 
-# Simple in-memory session state for MVP
 SESSION_STATE = {}
 
 
@@ -72,9 +72,134 @@ HFJ_KNOWLEDGE = [
     },
 ]
 
+US_STATES = {
+    "alabama": "Alabama",
+    "alaska": "Alaska",
+    "arizona": "Arizona",
+    "arkansas": "Arkansas",
+    "california": "California",
+    "colorado": "Colorado",
+    "connecticut": "Connecticut",
+    "delaware": "Delaware",
+    "florida": "Florida",
+    "georgia": "Georgia",
+    "hawaii": "Hawaii",
+    "idaho": "Idaho",
+    "illinois": "Illinois",
+    "indiana": "Indiana",
+    "iowa": "Iowa",
+    "kansas": "Kansas",
+    "kentucky": "Kentucky",
+    "louisiana": "Louisiana",
+    "maine": "Maine",
+    "maryland": "Maryland",
+    "massachusetts": "Massachusetts",
+    "michigan": "Michigan",
+    "minnesota": "Minnesota",
+    "mississippi": "Mississippi",
+    "missouri": "Missouri",
+    "montana": "Montana",
+    "nebraska": "Nebraska",
+    "nevada": "Nevada",
+    "new hampshire": "New Hampshire",
+    "new jersey": "New Jersey",
+    "new mexico": "New Mexico",
+    "new york": "New York",
+    "north carolina": "North Carolina",
+    "north dakota": "North Dakota",
+    "ohio": "Ohio",
+    "oklahoma": "Oklahoma",
+    "oregon": "Oregon",
+    "pennsylvania": "Pennsylvania",
+    "rhode island": "Rhode Island",
+    "south carolina": "South Carolina",
+    "south dakota": "South Dakota",
+    "tennessee": "Tennessee",
+    "texas": "Texas",
+    "utah": "Utah",
+    "vermont": "Vermont",
+    "virginia": "Virginia",
+    "washington": "Washington",
+    "west virginia": "West Virginia",
+    "wisconsin": "Wisconsin",
+    "wyoming": "Wyoming",
+    "district of columbia": "District of Columbia",
+}
+
+STATE_ABBREVIATIONS = {
+    "al": "Alabama",
+    "ak": "Alaska",
+    "az": "Arizona",
+    "ar": "Arkansas",
+    "ca": "California",
+    "co": "Colorado",
+    "ct": "Connecticut",
+    "de": "Delaware",
+    "fl": "Florida",
+    "ga": "Georgia",
+    "hi": "Hawaii",
+    "id": "Idaho",
+    "il": "Illinois",
+    "in": "Indiana",
+    "ia": "Iowa",
+    "ks": "Kansas",
+    "ky": "Kentucky",
+    "la": "Louisiana",
+    "me": "Maine",
+    "md": "Maryland",
+    "ma": "Massachusetts",
+    "mi": "Michigan",
+    "mn": "Minnesota",
+    "ms": "Mississippi",
+    "mo": "Missouri",
+    "mt": "Montana",
+    "ne": "Nebraska",
+    "nv": "Nevada",
+    "nh": "New Hampshire",
+    "nj": "New Jersey",
+    "nm": "New Mexico",
+    "ny": "New York",
+    "nc": "North Carolina",
+    "nd": "North Dakota",
+    "oh": "Ohio",
+    "ok": "Oklahoma",
+    "or": "Oregon",
+    "pa": "Pennsylvania",
+    "ri": "Rhode Island",
+    "sc": "South Carolina",
+    "sd": "South Dakota",
+    "tn": "Tennessee",
+    "tx": "Texas",
+    "ut": "Utah",
+    "vt": "Vermont",
+    "va": "Virginia",
+    "wa": "Washington",
+    "wv": "West Virginia",
+    "wi": "Wisconsin",
+    "wy": "Wyoming",
+    "dc": "District of Columbia",
+}
+
+COUNTRY_KEYWORDS = {
+    "ireland": "Ireland",
+    "uk": "United Kingdom",
+    "united kingdom": "United Kingdom",
+    "england": "United Kingdom",
+    "scotland": "United Kingdom",
+    "wales": "United Kingdom",
+    "northern ireland": "United Kingdom",
+    "united states": "United States",
+    "usa": "United States",
+    "us": "United States",
+}
+
 
 def normalize(text: str) -> str:
     return " ".join(text.lower().strip().split())
+
+
+def slugify_state(state_name: str) -> str:
+    return state_name.lower().replace(" ", "-")
 
 
 def find_match(text: str):
@@ -110,7 +235,7 @@ def is_help_trigger(text: str) -> bool:
 
 
 def is_yes(text: str) -> bool:
-    yes_words = ["yes", "yeah", "y", "immediate danger", "in danger", "urgent"]
+    yes_words = ["yes", "yeah", "y", "urgent", "in danger", "immediate danger"]
     return any(word == text or word in text for word in yes_words)
 
 
@@ -119,33 +244,95 @@ def is_no(text: str) -> bool:
     return any(word == text or word in text for word in no_words)
 
 
-def get_location_response(text: str):
-    if "california" in text:
-        return {
-            "reply": (
-                "If you are in California:\n\n"
-                "• Call 911 if there is immediate danger\n"
-                "• National Human Trafficking Hotline: 1-888-373-7888\n"
-                "• Text: 233733\n"
-                "• Website: https://humantraffickinghotline.org\n\n"
-                "They are available 24/7 and can help safely."
-            ),
-            "source": "https://humantraffickinghotline.org",
-            "type": "hfj",
-            "title": "Support in California",
-        }
+def detect_us_state(text: str) -> str | None:
+    # Full state names first
+    for key, value in US_STATES.items():
+        if key in text:
+            return value
 
-    if "ireland" in text:
+    # Abbreviations like "MN" or "CA"
+    tokens = re.findall(r"\b[a-z]{2}\b", text.lower())
+    for token in tokens:
+        if token in STATE_ABBREVIATIONS:
+            return STATE_ABBREVIATIONS[token]
+
+    return None
+
+
+def detect_country(text: str) -> str | None:
+    for key, value in COUNTRY_KEYWORDS.items():
+        if re.search(rf"\b{re.escape(key)}\b", text):
+            return value
+    return None
+
+
+def build_us_state_response(state_name: str):
+    state_slug = slugify_state(state_name)
+    state_page = f"https://humantraffickinghotline.org/en/statistics/{state_slug}"
+    local_services = "https://humantraffickinghotline.org/en/find-local-services"
+
+    return {
+        "reply": (
+            f"If you are in {state_name}:\n\n"
+            "• Call 911 if there is immediate danger\n"
+            "• National Human Trafficking Hotline: 1-888-373-7888\n"
+            "• Text: 233733\n"
+            "• Live chat and online reporting are also available\n\n"
+            f"I’ve also included the official {state_name} page and the local services directory."
+        ),
+        "source": state_page,
+        "extra_sources": [
+            "https://humantraffickinghotline.org/en/contact",
+            local_services,
+        ],
+        "type": "hfj",
+        "title": f"Support in {state_name}",
+    }
+
+
+def build_country_response(country_name: str):
+    if country_name == "Ireland":
         return {
             "reply": (
                 "If you are in Ireland:\n\n"
                 "• Call 112 or 999 if there is immediate danger\n"
                 "• Use approved local authorities or support services\n\n"
-                "If you want, I can help guide you on the safest next step."
+                "I’ve included Hope for Justice help information below."
             ),
             "source": "https://hopeforjustice.org/get-help/",
             "type": "hfj",
             "title": "Support in Ireland",
+        }
+
+    if country_name == "United Kingdom":
+        return {
+            "reply": (
+                "If you are in the UK:\n\n"
+                "• Call 999 if there is immediate danger\n"
+                "• Use approved local authorities or support services\n\n"
+                "I’ve included Hope for Justice contact information below."
+            ),
+            "source": "https://hopeforjustice.org/contact/",
+            "type": "hfj",
+            "title": "Support in the UK",
+        }
+
+    if country_name == "United States":
+        return {
+            "reply": (
+                "If you are in the United States:\n\n"
+                "• Call 911 if there is immediate danger\n"
+                "• National Human Trafficking Hotline: 1-888-373-7888\n"
+                "• Text: 233733\n"
+                "• Live chat and online reporting are available\n\n"
+                "If you tell me your state, I can make this more specific."
+            ),
+            "source": "https://humantraffickinghotline.org/en/contact",
+            "extra_sources": [
+                "https://humantraffickinghotline.org/en/find-local-services"
+            ],
+            "type": "hfj",
+            "title": "Support in the United States",
         }
 
     return None
@@ -172,7 +359,7 @@ def chat(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
     session = SESSION_STATE.setdefault(session_id, {"stage": None})
 
-    # Stage 1: waiting for danger answer
+    # Guided help flow: waiting for yes/no about danger
     if session["stage"] == "awaiting_danger":
         if is_yes(text):
             session["stage"] = "awaiting_location"
@@ -191,8 +378,7 @@ def chat(req: ChatRequest):
             session["stage"] = "awaiting_location"
             return {
                 "reply": (
-                    "Thank you. Please tell me the country or state, for example California or Ireland, "
-                    "and I’ll guide you to the right support route."
+                    "Thank you. Please tell me the country or state, for example Minnesota, California, Ireland, or the UK."
                 ),
                 "source": "https://hopeforjustice.org/get-help/",
                 "type": "hfj",
@@ -201,27 +387,34 @@ def chat(req: ChatRequest):
             }
 
         return {
-            "reply": (
-                "Please reply yes or no: is anyone in immediate danger right now?"
-            ),
+            "reply": "Please reply yes or no: is anyone in immediate danger right now?",
             "source": "https://hopeforjustice.org/get-help/",
             "type": "hfj",
             "title": "Immediate danger check",
             "session_id": session_id,
         }
 
-    # Stage 2: waiting for location
+    # Guided help flow: waiting for location
     if session["stage"] == "awaiting_location":
-        loc = get_location_response(text)
-        if loc:
-            loc["session_id"] = session_id
+        state_name = detect_us_state(text)
+        if state_name:
             session["stage"] = None
-            return loc
+            result = build_us_state_response(state_name)
+            result["session_id"] = session_id
+            return result
+
+        country_name = detect_country(text)
+        if country_name:
+            session["stage"] = None
+            result = build_country_response(country_name)
+            if result:
+                result["session_id"] = session_id
+                return result
 
         return {
             "reply": (
                 "Please tell me the country or state so I can guide you properly. "
-                "For example: California or Ireland."
+                "For example: Minnesota, California, Ireland, or UK."
             ),
             "source": "https://hopeforjustice.org/get-help/",
             "type": "hfj",
@@ -230,10 +423,18 @@ def chat(req: ChatRequest):
         }
 
     # Direct location handling
-    loc = get_location_response(text)
-    if loc:
-        loc["session_id"] = session_id
-        return loc
+    state_name = detect_us_state(text)
+    if state_name:
+        result = build_us_state_response(state_name)
+        result["session_id"] = session_id
+        return result
+
+    country_name = detect_country(text)
+    if country_name:
+        result = build_country_response(country_name)
+        if result:
+            result["session_id"] = session_id
+            return result
 
     # Start guided help flow
     if is_help_trigger(text):
