@@ -308,3 +308,30 @@ def infer_user_region(location: dict | None) -> str | None:
     if key in {"ireland", "uk", "united_states"}:
         return key
     return None
+
+def is_unknown_location_reply(text: str) -> bool:
+    text = text.lower().strip()
+
+    phrases = [
+        "i don't know where i am",
+        "i dont know where i am",
+        "don't know where i am",
+        "dont know where i am",
+        "i do not know where i am",
+        "i don't know my location",
+        "i dont know my location",
+        "i do not know my location",
+        "i'm not sure where i am",
+        "im not sure where i am",
+        "not sure where i am",
+        "i don't know what country i'm in",
+        "i dont know what country im in",
+        "i don't know what state i'm in",
+        "i dont know what state im in",
+        "no sé dónde estoy",
+        "no se donde estoy",
+        "no sé mi ubicación",
+        "no se mi ubicacion",
+    ]
+
+    return any(p in text for p in phrases)
