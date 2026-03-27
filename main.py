@@ -1022,64 +1022,96 @@ def reingest_all():
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    user_input = req.message.strip()
-    text = normalize(user_input)
+    try:
+        user_input = req.message.strip()
+        text = normalize(user_input)
 
-    if not user_input:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+        if not user_input:
+            raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    session_id = req.session_id or str(uuid.uuid4())
-    session = SESSION_STATE.setdefault(
-        session_id,
-        {
-            "stage": None,
-            "saved_location": None,
-        },
-    )
+        session_id = req.session_id or str(uuid.uuid4())
+        session = SESSION_STATE.setdefault(
+            session_id,
+            {
+                "stage": None,
+                "saved_location": None,
+            },
+        )
 
-    # Break out of pending support flow if the user asks a general education question.
-    if session["stage"] == "awaiting_location" and looks_like_general_question(text):
-        session["stage"] = None
-        session["saved_location"] = None
-
-    if session["stage"] == "awaiting_location":
-        location = detect_location(user_input, text)
-
-        if location:
+        if session["stage"] == "awaiting_location" and looks_like_general_question(text):
             session["stage"] = None
             session["saved_location"] = None
 
-            if location["kind"] == "state":
+        if session["stage"] == "awaiting_location":
+            location = detect_location(user_input, text)
+
+            if location:
+                session["stage"] = None
+                session["saved_location"] = None
+
+                if location["kind"] == "state":
+                    result = build_us_state_response(location["value"])
+                else:
+                    result = build_country_response(location["value"])
+
+                result["session_id"] = session_id
+                return result
+
+            return {
+                "reply": "Please tell me your country or state so I can give you the right support options.",
+                "source": "https://hopeforjustice.org/get-help/",
+                "type": "hfj",
+                "title": "Location needed",
+                "session_id": session_id,
+            }
+
+        location = detect_location(user_input, text)
+        if location:
+            if location.get("kind") == "state":
                 result = build_us_state_response(location["value"])
-            else:
+                result["session_id"] = session_id
+                return result
+
+            if location.get("kind") == "country":
                 result = build_country_response(location["value"])
+                result["session_id"] = session_id
+                return result
 
-            result["session_id"] = session_id
-            return result
+        if looks_like_general_question(text):
+            user_region = infer_user_region(location)
+            match = find_match(text, user_region=user_region)
+            if match:
+                return {
+                    "reply": add_safety_footer(match["answer"]),
+                    "source": match["source"],
+                    "type": "hfj",
+                    "title": match["title"],
+                    "section_heading": match["section_heading"],
+                    "source_site": match["source_site"],
+                    "session_id": session_id,
+                }
 
-        return {
-            "reply": "Please tell me your country or state so I can give you the right support options.",
-            "source": "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": "Location needed",
-            "session_id": session_id,
-        }
+        if is_help_trigger(text):
+            detected_location = detect_location(user_input, text)
 
-    location = detect_location(user_input, text)
-    if location:
-        if location.get("kind") == "state":
-            result = build_us_state_response(location["value"])
-            result["session_id"] = session_id
-            return result
+            if detected_location and detected_location["confidence"] == "high":
+                if detected_location["kind"] == "state":
+                    result = build_us_state_response(detected_location["value"])
+                else:
+                    result = build_country_response(detected_location["value"])
 
-        if location.get("kind") == "country":
-            result = build_country_response(location["value"])
-            result["session_id"] = session_id
-            return result
+                result["reply"] = (
+                    "I’m really sorry this may be happening.\n\n"
+                    "If there is immediate danger, contact emergency services now.\n\n"
+                    + result["reply"]
+                )
+                result["session_id"] = session_id
+                return result
 
-    # Educational retrieval should win before support flow for knowledge questions.
-    if looks_like_general_question(text):
-        user_region = infer_user_region(detect_location(user_input, text))
+            session["stage"] = "awaiting_location"
+            return build_help_prompt(detected_location, session_id)
+
+        user_region = infer_user_region(location)
         match = find_match(text, user_region=user_region)
         if match:
             return {
@@ -1092,45 +1124,12 @@ def chat(req: ChatRequest):
                 "session_id": session_id,
             }
 
-    if is_help_trigger(text):
-        detected_location = detect_location(user_input, text)
+        if not client:
+            raise HTTPException(status_code=500, detail="Missing API key")
 
-        if detected_location and detected_location["confidence"] == "high":
-            if detected_location["kind"] == "state":
-                result = build_us_state_response(detected_location["value"])
-            else:
-                result = build_country_response(detected_location["value"])
-
-            result["reply"] = (
-                "I’m really sorry this may be happening.\n\n"
-                "If there is immediate danger, contact emergency services now.\n\n"
-                + result["reply"]
-            )
-            result["session_id"] = session_id
-            return result
-
-        session["stage"] = "awaiting_location"
-        return build_help_prompt(detected_location, session_id)
-
-    user_region = infer_user_region(location)
-    match = find_match(text, user_region=user_region)
-    if match:
-        return {
-            "reply": add_safety_footer(match["answer"]),
-            "source": match["source"],
-            "type": "hfj",
-            "title": match["title"],
-            "section_heading": match["section_heading"],
-            "source_site": match["source_site"],
-            "session_id": session_id,
-        }
-
-    if not client:
-        raise HTTPException(status_code=500, detail="Missing API key")
-
-    response = client.responses.create(
-        model="gpt-4o",
-        input=f"""
+        response = client.responses.create(
+            model="gpt-4o",
+            input=f"""
 You are the Hope for Justice assistant.
 
 Provide clear, structured, calm, supportive answers about trafficking-related topics.
@@ -1139,12 +1138,17 @@ If someone may need help, encourage official support routes.
 
 Question: {user_input}
 """
-    )
+        )
 
-    return {
-        "reply": response.output_text,
-        "source": "AI-generated general guidance",
-        "type": "ai",
-        "title": "General guidance",
-        "session_id": session_id,
-    }
+        return {
+            "reply": response.output_text,
+            "source": "AI-generated general guidance",
+            "type": "ai",
+            "title": "General guidance",
+            "session_id": session_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat error: {type(e).__name__}: {str(e)}")
