@@ -6,11 +6,15 @@ import uuid
 from db import init_db
 from ingest import ingest_all_sources
 from retrieval import find_match
+
+)
 from support import (
     build_country_response,
     build_help_prompt,
+    build_unknown_location_response,
     build_us_state_response,
 )
+
 from utils import (
     SESSION_STATE,
     add_safety_footer,
@@ -18,6 +22,7 @@ from utils import (
     detect_location,
     infer_user_region,
     is_help_trigger,
+    is_unknown_location_reply,
     looks_like_general_question,
     normalize,
 )
@@ -32,6 +37,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 
 
 class ChatRequest(BaseModel):
@@ -176,6 +183,13 @@ def chat(req: ChatRequest):
 
         # If we are waiting for a location, prioritize that flow.
         if session["stage"] == "awaiting_location":
+            if is_unknown_location_reply(user_input):
+                session["stage"] = None
+                session["saved_location"] = None
+                result = build_unknown_location_response(session_id, language=language)
+                result["language"] = language
+                return result
+
             location = detect_location(user_input, text)
 
             if location:
