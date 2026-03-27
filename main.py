@@ -982,6 +982,8 @@ def build_country_response(country_name: str):
     country_key = normalize_country_key(country_name)
     route = get_support_route(country_key)
 
+    display_name = country_name.strip()
+
     if route:
         reply_lines = [
             f"If you are in {route['display_name']}:",
@@ -995,14 +997,31 @@ def build_country_response(country_name: str):
         if route["website"]:
             reply_lines.append(f"• Website: {route['website']}")
 
-        return {
+        result = {
             "reply": "\n".join(reply_lines),
             "source": route["website"] or "https://hopeforjustice.org/get-help/",
             "type": "hfj",
             "title": f"Support in {route['display_name']}",
         }
 
-    display_name = country_name.strip()
+        # NEW: if this is only a thin placeholder route, still add AI contacts
+        is_thin_route = (
+            not route.get("phone") and
+            (
+                not route.get("website")
+                or route.get("website") == "https://hopeforjustice.org/get-help/"
+            )
+        )
+
+        if is_thin_route:
+            ai_contacts = get_ai_country_support(route["display_name"])
+            if ai_contacts:
+                result["additional_contacts_title"] = ai_contacts.get("title")
+                result["additional_contacts_status"] = ai_contacts.get("status", "verify")
+                result["additional_contacts"] = ai_contacts.get("contacts", [])
+                result["additional_contacts_raw_text"] = ai_contacts.get("raw_text", "")
+
+        return result
 
     result = {
         "reply": (
@@ -1024,36 +1043,6 @@ def build_country_response(country_name: str):
         result["additional_contacts_raw_text"] = ai_contacts.get("raw_text", "")
 
     return result
-
-
-def build_help_prompt(location: dict | None, session_id: str):
-    if location and location["confidence"] == "high":
-        return {
-            "reply": (
-                "I’m really sorry this may be happening.\n\n"
-                "If there is immediate danger, contact emergency services now.\n\n"
-                f"I understand you may be in {location['value']}. "
-                "If that is right, I can guide you to support options for that location."
-            ),
-            "source": "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": "Immediate support",
-            "session_id": session_id,
-        }
-
-    return {
-        "reply": (
-            "I’m really sorry this may be happening.\n\n"
-            "If there is immediate danger, contact emergency services now.\n\n"
-            "Please tell me your country or state and I’ll give you the right support options."
-        ),
-        "source": "https://hopeforjustice.org/get-help/",
-        "type": "hfj",
-        "title": "Immediate support",
-        "session_id": session_id,
-    }
-
-
 @app.get("/")
 def root():
     return {"message": "HFJ Assistant is running"}
