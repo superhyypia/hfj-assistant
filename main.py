@@ -387,7 +387,6 @@ def add_safety_footer(text: str) -> str:
         + "\n\nIf someone may be in danger, please seek help from official services immediately."
     )
 
-
 def init_db():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -408,7 +407,7 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS hfj_content_chunks (
                     id BIGSERIAL PRIMARY KEY,
                     source_url TEXT NOT NULL,
-                    source_site TEXT NOT NULL,
+                    source_site TEXT NOT NULL DEFAULT 'hopeforjustice',
                     region TEXT NOT NULL DEFAULT 'global',
                     content_type TEXT NOT NULL DEFAULT 'education',
                     page_title TEXT NOT NULL,
@@ -420,6 +419,21 @@ def init_db():
                 )
                 """
             )
+
+            cur.execute("""
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS source_site TEXT NOT NULL DEFAULT 'hopeforjustice'
+            """)
+
+            cur.execute("""
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'global'
+            """)
+
+            cur.execute("""
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'education'
+            """)
 
             cur.executemany(
                 """
@@ -467,6 +481,7 @@ def init_db():
                 ],
             )
         conn.commit()
+
 
 
 def fetch_page_html(url: str) -> str:
