@@ -20,6 +20,34 @@ def get_openai_client():
     return _client
 
 
+def embed_text(text: str) -> list[float] | None:
+    client = get_openai_client()
+    if not client or not text.strip():
+        return None
+
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    client = get_openai_client()
+    if not client:
+        raise RuntimeError("Missing OpenAI API key")
+
+    cleaned = [t for t in texts if t and t.strip()]
+    if not cleaned:
+        return []
+
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=cleaned
+    )
+    return [item.embedding for item in response.data]
+
+
 def get_ai_country_support(country_name: str, language: str = "en"):
     client = get_openai_client()
     if not client:
