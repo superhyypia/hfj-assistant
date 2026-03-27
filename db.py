@@ -37,6 +37,7 @@ def init_db():
                     chunk_index INTEGER NOT NULL,
                     section_heading TEXT,
                     content TEXT NOT NULL,
+                    embedding_json TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE(source_url, chunk_index)
                 )
@@ -71,6 +72,12 @@ def init_db():
                 """
                 ALTER TABLE hfj_content_chunks
                 ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'education'
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS embedding_json TEXT
                 """
             )
             cur.execute(
