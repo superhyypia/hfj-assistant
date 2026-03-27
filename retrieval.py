@@ -55,6 +55,8 @@ def score_chunk(
         "senales de trata",
         "signos de explotación",
         "signos de explotacion",
+        "human trafficking hotline",
+        "national human trafficking hotline",
     ]
 
     for phrase in exact_phrases:
@@ -65,6 +67,20 @@ def score_chunk(
                 score += 14.0
             if phrase in content_l:
                 score += 5.0
+
+    # Hotline / contact intent boost
+    if any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"]):
+        if content_type == "support":
+            score += 10.0
+
+        if source_site == "humantraffickinghotline":
+            score += 8.0
+
+        if "contact" in title_l or "contact" in heading_l:
+            score += 10.0
+
+        if "hotline" in title_l or "hotline" in heading_l or "hotline" in content_l:
+            score += 12.0
 
     # Question intent bonuses
     if any(x in query_l for x in ["what is", "qué es", "que es"]):
@@ -101,7 +117,9 @@ def score_chunk(
         score -= 1.5
 
     # Penalize support pages for educational queries
-    if content_type == "support" and any(x in query_l for x in ["what is", "qué es", "que es", "sign", "señales", "senales"]):
+    if content_type == "support" and any(
+        x in query_l for x in ["what is", "qué es", "que es", "sign", "señales", "senales"]
+    ):
         score -= 2.0
 
     return max(score, 0.0)
@@ -183,12 +201,3 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         "second_score": round(second_score, 2) if second_score is not None else None,
         "confidence": confidence,
     }
-
-# Hotline / contact intent boost
-if any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"]):
-    if content_type == "support":
-        score += 10.0
-
-    # Extra boost for hotline source
-    if source_site == "humantraffickinghotline":
-        score += 8.0
