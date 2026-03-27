@@ -898,12 +898,12 @@ def build_country_response(country_name: str):
         }
 
     display_name = country_name.strip()
-    return {
+
+    result = {
         "reply": (
             f"If you are in {display_name}:\n\n"
             "• If there is immediate danger, contact local emergency services right away\n"
             "• Seek help from official local authorities or trusted local support organisations\n\n"
-            "I do not want to guess country-specific contact details. "
             "I’ve included Hope for Justice help information below while you seek the appropriate local official support."
         ),
         "source": "https://hopeforjustice.org/get-help/",
@@ -911,6 +911,13 @@ def build_country_response(country_name: str):
         "title": f"Support in {display_name}",
     }
 
+    ai_contacts = get_ai_country_support(display_name)
+    if ai_contacts:
+        result["additional_contacts_title"] = ai_contacts["title"]
+        result["additional_contacts_text"] = ai_contacts["text"]
+        result["additional_contacts_status"] = ai_contacts["status"]
+
+    return result
 
 def build_help_prompt(location: dict | None, session_id: str):
     if location and location["confidence"] == "high":
@@ -937,6 +944,44 @@ def build_help_prompt(location: dict | None, session_id: str):
         "type": "hfj",
         "title": "Immediate support",
         "session_id": session_id,
+    }
+
+def get_ai_country_support(country_name: str):
+    if not client:
+        return None
+
+    response = client.responses.create(
+        model="gpt-4o",
+        input=f"""
+You are helping build a victim-support assistant.
+
+Find official or highly credible anti-trafficking or victim-support contacts for {country_name}.
+
+Return:
+- organisation
+- phone
+- hours
+- website
+- email
+- short note
+
+Rules:
+- Prefer government, national helplines, or major victim-support organisations
+- Do not invent contacts
+- If uncertain, say uncertain
+- Keep it concise
+"""
+    )
+
+    text = response.output_text.strip()
+
+    if not text:
+        return None
+
+    return {
+        "title": f"Additional local contacts for {country_name} — verify before use",
+        "text": text,
+        "status": "verify",
     }
 
 
