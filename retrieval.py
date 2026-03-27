@@ -94,7 +94,7 @@ def score_chunk(
         score += 5.0
 
     if user_region == "united_states" and source_site == "humantraffickinghotline":
-    score += 6.0
+        score += 6.0
 
     # Penalize vague content if no strong heading match
     if heading_l and not any(term in heading_l for term in query_terms):
