@@ -275,11 +275,12 @@ def is_help_trigger(text: str) -> bool:
         "someone is being exploited",
         "i think this is trafficking",
         "report trafficking",
-        "cannot leave",
-        "can't leave",
-        "forced",
-        "trapped",
-        "controlled",
+        "i am trapped",
+        "i'm trapped",
+        "i cannot leave",
+        "i can't leave",
+        "someone cannot leave",
+        "someone can't leave",
     ]
     return any(t in text for t in triggers)
 
@@ -291,14 +292,20 @@ def looks_like_general_question(text: str) -> bool:
         "how do i spot",
         "spot the signs",
         "signs of trafficking",
+        "what are the signs",
         "human trafficking",
         "labour trafficking",
         "labor trafficking",
         "sex trafficking",
         "sexual exploitation",
-        "what are the signs",
+        "forced sexual exploitation",
+        "forced labour",
+        "forced labor",
         "define trafficking",
         "meaning of trafficking",
+        "warning signs",
+        "indicators of trafficking",
+        "indicators of exploitation",
     ]
     return any(t in text for t in triggers)
 
@@ -712,6 +719,7 @@ def score_chunk(
         "forced labor",
         "sex trafficking",
         "sexual exploitation",
+        "forced sexual exploitation",
         "report modern slavery",
     ]
 
@@ -736,7 +744,12 @@ def score_chunk(
     if "help" in query_l and content_type == "support":
         score += 4.0
 
-    if ("sign" in query_l or "what is" in query_l) and content_type == "education":
+    if (
+        "sign" in query_l
+        or "what is" in query_l
+        or "what are the signs" in query_l
+        or "sexual exploitation" in query_l
+    ) and content_type == "education":
         score += 3.0
 
     return score
@@ -1048,6 +1061,21 @@ def chat(req: ChatRequest):
             result = build_country_response(location["value"])
             result["session_id"] = session_id
             return result
+
+    # Educational retrieval should win before support flow for knowledge questions.
+    if looks_like_general_question(text):
+        user_region = infer_user_region(detect_location(user_input, text))
+        match = find_match(text, user_region=user_region)
+        if match:
+            return {
+                "reply": add_safety_footer(match["answer"]),
+                "source": match["source"],
+                "type": "hfj",
+                "title": match["title"],
+                "section_heading": match["section_heading"],
+                "source_site": match["source_site"],
+                "session_id": session_id,
+            }
 
     if is_help_trigger(text):
         detected_location = detect_location(user_input, text)
