@@ -6,6 +6,7 @@ from openai import OpenAI
 import os
 import uuid
 import re
+import json
 import requests
 import pycountry
 import psycopg
@@ -90,7 +91,7 @@ CONTENT_SOURCES = [
     },
 ]
 
-USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.1)"
+USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.2)"
 
 JUNK_PATTERNS = [
     "out of date browser",
@@ -393,6 +394,17 @@ def detect_location(user_input: str, text: str) -> dict | None:
     return None
 
 
+def infer_user_region(location: dict | None) -> str | None:
+    if not location:
+        return None
+    if location["kind"] == "state":
+        return "united_states"
+    key = normalize_country_key(location["value"])
+    if key in {"ireland", "uk", "united_states"}:
+        return key
+    return None
+
+
 def add_safety_footer(text: str) -> str:
     return (
         text.strip()
@@ -447,6 +459,17 @@ def init_db():
                 ALTER TABLE hfj_content_chunks
                 ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'education'
             """)
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ai_country_support_cache (
+                    country_key TEXT PRIMARY KEY,
+                    country_name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
 
             cur.executemany(
                 """
@@ -583,10 +606,8 @@ def parse_page(html: str, url: str, source_site: str, region: str, content_type:
 
     for node in nodes:
         text = normalize_whitespace(node.get_text(" ", strip=True))
-
         if not text or len(text) < 20:
             continue
-
         if is_junk(text):
             continue
 
@@ -622,10 +643,7 @@ def upsert_sections(sections: list[dict]) -> int:
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             source_url = sections[0]["source_url"]
-            cur.execute(
-                "DELETE FROM hfj_content_chunks WHERE source_url = %s",
-                (source_url,),
-            )
+            cur.execute("DELETE FROM hfj_content_chunks WHERE source_url = %s", (source_url,))
             cur.executemany(
                 """
                 INSERT INTO hfj_content_chunks
@@ -782,19 +800,6 @@ def score_chunk(
     return score
 
 
-def infer_user_region(location: dict | None) -> str | None:
-    if not location:
-        return None
-
-    if location["kind"] == "state":
-        return "united_states"
-
-    key = normalize_country_key(location["value"])
-    if key in {"ireland", "uk", "united_states"}:
-        return key
-    return None
-
-
 def find_match(query: str, user_region: str | None = None):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -847,6 +852,106 @@ def find_match(query: str, user_region: str | None = None):
         "section_heading": best_row[5],
         "answer": combined[:1200],
     }
+
+
+def get_ai_country_support(country_name: str):
+    if not client:
+        return None
+
+    country_key = normalize_country_key(country_name)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT payload_json
+                FROM ai_country_support_cache
+                WHERE country_key = %s
+                """,
+                (country_key,),
+            )
+            row = cur.fetchone()
+
+    if row:
+        try:
+            return json.loads(row[0])
+        except Exception:
+            pass
+
+    response = client.responses.create(
+        model="gpt-4o",
+        input=f"""
+You are helping build a victim-support assistant.
+
+Find official or highly credible anti-trafficking or victim-support contacts for {country_name}.
+
+Return ONLY valid JSON in this exact schema:
+
+{{
+  "title": "Additional local contacts for {country_name}",
+  "status": "verify",
+  "contacts": [
+    {{
+      "organisation": "",
+      "phone": "",
+      "hours": "",
+      "website": "",
+      "email": "",
+      "notes": ""
+    }}
+  ]
+}}
+
+Rules:
+- Prefer government agencies, national helplines, or major victim-support organisations
+- Do not invent contact details
+- If a field is unknown, use an empty string
+- Include up to 3 contacts
+- No markdown
+- No explanation outside JSON
+"""
+    )
+
+    raw = response.output_text.strip()
+    raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+
+    if not raw:
+        return None
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {
+            "title": f"Additional local contacts for {country_name}",
+            "status": "verify",
+            "contacts": [],
+            "raw_text": raw,
+        }
+
+    if "title" not in data:
+        data["title"] = f"Additional local contacts for {country_name}"
+    if "status" not in data:
+        data["status"] = "verify"
+    if "contacts" not in data or not isinstance(data["contacts"], list):
+        data["contacts"] = []
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ai_country_support_cache (country_key, country_name, payload_json, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (country_key)
+                DO UPDATE SET
+                    country_name = EXCLUDED.country_name,
+                    payload_json = EXCLUDED.payload_json,
+                    updated_at = NOW()
+                """,
+                (country_key, country_name, json.dumps(data)),
+            )
+        conn.commit()
+
+    return data
 
 
 def build_us_state_response(state_name: str):
@@ -913,11 +1018,13 @@ def build_country_response(country_name: str):
 
     ai_contacts = get_ai_country_support(display_name)
     if ai_contacts:
-        result["additional_contacts_title"] = ai_contacts["title"]
-        result["additional_contacts_text"] = ai_contacts["text"]
-        result["additional_contacts_status"] = ai_contacts["status"]
+        result["additional_contacts_title"] = ai_contacts.get("title")
+        result["additional_contacts_status"] = ai_contacts.get("status", "verify")
+        result["additional_contacts"] = ai_contacts.get("contacts", [])
+        result["additional_contacts_raw_text"] = ai_contacts.get("raw_text", "")
 
     return result
+
 
 def build_help_prompt(location: dict | None, session_id: str):
     if location and location["confidence"] == "high":
@@ -944,44 +1051,6 @@ def build_help_prompt(location: dict | None, session_id: str):
         "type": "hfj",
         "title": "Immediate support",
         "session_id": session_id,
-    }
-
-def get_ai_country_support(country_name: str):
-    if not client:
-        return None
-
-    response = client.responses.create(
-        model="gpt-4o",
-        input=f"""
-You are helping build a victim-support assistant.
-
-Find official or highly credible anti-trafficking or victim-support contacts for {country_name}.
-
-Return:
-- organisation
-- phone
-- hours
-- website
-- email
-- short note
-
-Rules:
-- Prefer government, national helplines, or major victim-support organisations
-- Do not invent contacts
-- If uncertain, say uncertain
-- Keep it concise
-"""
-    )
-
-    text = response.output_text.strip()
-
-    if not text:
-        return None
-
-    return {
-        "title": f"Additional local contacts for {country_name} — verify before use",
-        "text": text,
-        "status": "verify",
     }
 
 
