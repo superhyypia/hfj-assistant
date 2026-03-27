@@ -1,193 +1,267 @@
-from ai import get_ai_country_support
+import requests
+from bs4 import BeautifulSoup
+
 from db import get_db_connection
-from utils import normalize_country_key, slugify_state
+from utils import normalize_whitespace
+
+CONTENT_SOURCES = [
+    {
+        "url": "https://hopeforjustice.org/human-trafficking/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "education",
+    },
+    {
+        "url": "https://hopeforjustice.org/spot-the-signs/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "education",
+    },
+    {
+        "url": "https://hopeforjustice.org/get-help/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "support",
+    },
+    {
+        "url": "https://hopeforjustice.org/contact/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "support",
+    },
+    {
+        "url": "https://hopeforjustice.org/resources-and-statistics/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "resource",
+    },
+    {
+        "url": "https://hopeforjustice.org/resources-and-statistics/spot-the-signs-resources/",
+        "source_site": "hopeforjustice",
+        "region": "global",
+        "content_type": "resource",
+    },
+    {
+        "url": "https://www2.hse.ie/services/human-trafficking/",
+        "source_site": "hse",
+        "region": "ireland",
+        "content_type": "support",
+    },
+    {
+        "url": "https://www2.hse.ie/services/domestic-sexual-gender-based-violence/",
+        "source_site": "hse",
+        "region": "ireland",
+        "content_type": "support",
+    },
+    {
+        "url": "https://www.modernslavery.gov.uk/",
+        "source_site": "modernslavery_uk",
+        "region": "uk",
+        "content_type": "reporting",
+    },
+    {
+        "url": "https://www.modernslavery.gov.uk/prompt-sheet-for-working-offline",
+        "source_site": "modernslavery_uk",
+        "region": "uk",
+        "content_type": "reporting",
+    },
+]
+
+USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.3)"
+
+JUNK_PATTERNS = [
+    "out of date browser",
+    "update your browser",
+    "we use cookies",
+    "privacy policy",
+    "cookie settings",
+    "accept cookies",
+    "terms and conditions",
+    "all rights reserved",
+    "skip to content",
+    "manage consent",
+    "close this notice",
+    "phone this field is for validation purposes",
+    "sign up to our email updates",
+]
 
 
-def get_support_route(region_key: str):
+def is_junk(text: str) -> bool:
+    t = text.lower()
+    return any(pattern in t for pattern in JUNK_PATTERNS)
+
+
+def fetch_page_html(url: str) -> str:
+    response = requests.get(
+        url,
+        timeout=20,
+        headers={"User-Agent": USER_AGENT},
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def chunk_text(text: str, max_chars: int = 1200) -> list[str]:
+    text = normalize_whitespace(text)
+    if not text:
+        return []
+
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    chunks = []
+    current = ""
+
+    for p in paragraphs:
+        if len(current) + len(p) + 1 <= max_chars:
+            current = f"{current}\n{p}".strip()
+        else:
+            if current:
+                chunks.append(current)
+            if len(p) <= max_chars:
+                current = p
+            else:
+                for i in range(0, len(p), max_chars):
+                    part = p[i:i + max_chars].strip()
+                    if part:
+                        chunks.append(part)
+                current = ""
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def parse_page(html: str, url: str, source_site: str, region: str, content_type: str) -> tuple[str, list[dict]]:
+    soup = BeautifulSoup(html, "lxml")
+
+    for tag in soup(["script", "style", "noscript", "iframe", "svg", "form"]):
+        tag.decompose()
+
+    for selector in ["header", "footer", "nav"]:
+        for tag in soup.select(selector):
+            tag.decompose()
+
+    main_content = soup.find("main")
+    article_content = soup.find("article")
+    root = article_content or main_content or soup
+
+    page_title = "Content"
+    h1 = root.find("h1")
+    if h1:
+        page_title = normalize_whitespace(h1.get_text(" ", strip=True))
+    elif soup.title:
+        page_title = normalize_whitespace(soup.title.get_text(" ", strip=True))
+
+    nodes = root.find_all(["h2", "h3", "p", "li"])
+    sections = []
+    current_heading = page_title
+    buffer = []
+
+    def flush_buffer():
+        nonlocal buffer
+        if not buffer:
+            return
+        joined = "\n".join(buffer).strip()
+        for chunk in chunk_text(joined):
+            sections.append(
+                {
+                    "source_url": url,
+                    "source_site": source_site,
+                    "region": region,
+                    "content_type": content_type,
+                    "page_title": page_title,
+                    "section_heading": current_heading,
+                    "content": chunk,
+                }
+            )
+        buffer = []
+
+    for node in nodes:
+        text = normalize_whitespace(node.get_text(" ", strip=True))
+        if not text or len(text) < 20:
+            continue
+        if is_junk(text):
+            continue
+
+        if node.name in ["h2", "h3"]:
+            flush_buffer()
+            current_heading = text
+        else:
+            buffer.append(text)
+
+    flush_buffer()
+    return page_title, sections
+
+
+def upsert_sections(sections: list[dict]) -> int:
+    if not sections:
+        return 0
+
+    rows = []
+    for idx, section in enumerate(sections, start=1):
+        rows.append(
+            (
+                section["source_url"],
+                section["source_site"],
+                section["region"],
+                section["content_type"],
+                section["page_title"],
+                idx,
+                section["section_heading"],
+                section["content"],
+            )
+        )
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
+            source_url = sections[0]["source_url"]
+            cur.execute("DELETE FROM hfj_content_chunks WHERE source_url = %s", (source_url,))
+            cur.executemany(
                 """
-                SELECT region_key, display_name, emergency_text, phone, website
-                FROM hfj_support_routes
-                WHERE region_key = %s
+                INSERT INTO hfj_content_chunks
+                (source_url, source_site, region, content_type, page_title, chunk_index, section_heading, content)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (region_key,),
+                rows,
             )
-            row = cur.fetchone()
+        conn.commit()
 
-    if not row:
-        return None
-
-    return {
-        "region_key": row[0],
-        "display_name": row[1],
-        "emergency_text": row[2],
-        "phone": row[3],
-        "website": row[4],
-    }
+    return len(rows)
 
 
-def build_us_state_response(state_name: str, language: str = "en"):
-    state_slug = slugify_state(state_name)
-    state_page = f"https://humantraffickinghotline.org/en/statistics/{state_slug}"
+def ingest_all_sources():
+    results = []
 
-    if language == "es":
-        reply = (
-            f"Si estás en {state_name}:\n\n"
-            "• Si hay peligro inmediato, llama ahora al 911\n"
-            "• Línea Nacional contra la Trata de Personas: 1-888-373-7888\n"
-            "• Texto: 233733\n"
-            "• También hay chat en vivo y notificación en línea\n\n"
-            f"La Línea Nacional contra la Trata de Personas también tiene una página dedicada a {state_name}, "
-            "y he incluido abajo el directorio de servicios locales."
-        )
-        title = f"Apoyo en {state_name}"
-    else:
-        reply = (
-            f"If you are in {state_name}:\n\n"
-            "• If there is immediate danger, call 911 now\n"
-            "• National Human Trafficking Hotline: 1-888-373-7888\n"
-            "• Text: 233733\n"
-            "• Live chat and online reporting are also available\n\n"
-            f"The National Human Trafficking Hotline also has a dedicated {state_name} page, "
-            "and I’ve included the local services directory below."
-        )
-        title = f"Support in {state_name}"
-
-    return {
-        "reply": reply,
-        "source": state_page,
-        "extra_sources": [
-            "https://humantraffickinghotline.org/en/contact",
-            "https://humantraffickinghotline.org/en/find-local-services",
-        ],
-        "type": "hfj",
-        "title": title,
-    }
-
-
-def build_country_response(country_name: str, language: str = "en"):
-    country_key = normalize_country_key(country_name)
-    route = get_support_route(country_key)
-    display_name = country_name.strip()
-
-    if route:
-        if language == "es":
-            reply_lines = [
-                f"Si estás en {route['display_name']}:",
-                "",
-                f"• {route['emergency_text']}",
-            ]
-            if route["phone"]:
-                reply_lines.append(f"• Contacto de apoyo: {route['phone']}")
-            if route["website"]:
-                reply_lines.append(f"• Sitio web: {route['website']}")
-            title = f"Apoyo en {route['display_name']}"
-        else:
-            reply_lines = [
-                f"If you are in {route['display_name']}:",
-                "",
-                f"• {route['emergency_text']}",
-            ]
-            if route["phone"]:
-                reply_lines.append(f"• Support contact: {route['phone']}")
-            if route["website"]:
-                reply_lines.append(f"• Website: {route['website']}")
-            title = f"Support in {route['display_name']}"
-
-        result = {
-            "reply": "\n".join(reply_lines),
-            "source": route["website"] or "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": title,
-        }
-
-        is_thin_route = (
-            not route.get("phone") and
-            (
-                not route.get("website")
-                or route.get("website") == "https://hopeforjustice.org/get-help/"
+    for source in CONTENT_SOURCES:
+        try:
+            html = fetch_page_html(source["url"])
+            page_title, sections = parse_page(
+                html=html,
+                url=source["url"],
+                source_site=source["source_site"],
+                region=source["region"],
+                content_type=source["content_type"],
             )
-        )
-
-        if is_thin_route:
-            ai_contacts = get_ai_country_support(route["display_name"], language=language)
-            if ai_contacts:
-                result["additional_contacts_title"] = ai_contacts.get("title")
-                result["additional_contacts_status"] = ai_contacts.get("status", "verify")
-                result["additional_contacts"] = ai_contacts.get("contacts", [])
-                result["additional_contacts_raw_text"] = ai_contacts.get("raw_text", "")
-
-        return result
-
-    if language == "es":
-        reply = (
-            f"Si estás en {display_name}:\n\n"
-            "• Si hay peligro inmediato, contacta de inmediato con los servicios de emergencia locales\n"
-            "• Busca ayuda de las autoridades locales oficiales o de organizaciones de apoyo de confianza\n\n"
-            "He incluido la información de ayuda de Hope for Justice mientras buscas el apoyo oficial local adecuado."
-        )
-        title = f"Apoyo en {display_name}"
-    else:
-        reply = (
-            f"If you are in {display_name}:\n\n"
-            "• If there is immediate danger, contact local emergency services right away\n"
-            "• Seek help from official local authorities or trusted local support organisations\n\n"
-            "I’ve included Hope for Justice help information below while you seek the appropriate local official support."
-        )
-        title = f"Support in {display_name}"
-
-    result = {
-        "reply": reply,
-        "source": "https://hopeforjustice.org/get-help/",
-        "type": "hfj",
-        "title": title,
-    }
-
-    ai_contacts = get_ai_country_support(display_name, language=language)
-    if ai_contacts:
-        result["additional_contacts_title"] = ai_contacts.get("title")
-        result["additional_contacts_status"] = ai_contacts.get("status", "verify")
-        result["additional_contacts"] = ai_contacts.get("contacts", [])
-        result["additional_contacts_raw_text"] = ai_contacts.get("raw_text", "")
-
-    return result
-
-
-def build_help_prompt(location: dict | None, session_id: str, language: str = "en"):
-    if location and location["confidence"] == "high":
-        if language == "es":
-            reply = (
-                "Siento mucho que esto pueda estar ocurriendo.\n\n"
-                "Si hay peligro inmediato, contacta ahora con los servicios de emergencia.\n\n"
-                f"Entiendo que puedes estar en {location['value']}. Si es así, puedo orientarte hacia opciones de apoyo para ese lugar."
+            count = upsert_sections(sections)
+            results.append(
+                {
+                    "url": source["url"],
+                    "source_site": source["source_site"],
+                    "region": source["region"],
+                    "content_type": source["content_type"],
+                    "page_title": page_title,
+                    "chunks_ingested": count,
+                    "status": "ok",
+                }
             )
-            title = "Apoyo inmediato"
-        else:
-            reply = (
-                "I’m really sorry this may be happening.\n\n"
-                "If there is immediate danger, contact emergency services now.\n\n"
-                f"I understand you may be in {location['value']}. If that is right, I can guide you to support options for that location."
+        except Exception as e:
+            results.append(
+                {
+                    "url": source["url"],
+                    "source_site": source["source_site"],
+                    "status": "error",
+                    "error": str(e),
+                }
             )
-            title = "Immediate support"
 
-        return {
-            "reply": reply,
-            "source": "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": title,
-            "session_id": session_id,
-        }
-
-    return {
-        "reply": (
-            "Please tell me your country or state so I can give you the right support options."
-            if language == "en"
-            else "Por favor, dime tu país o estado para poder darte las opciones de apoyo adecuadas."
-        ),
-        "source": "https://hopeforjustice.org/get-help/",
-        "type": "hfj",
-        "title": "Immediate support" if language == "en" else "Apoyo inmediato",
-        "session_id": session_id,
-    }
+    return results
