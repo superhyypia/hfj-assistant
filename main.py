@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import uuid
 
 from db import init_db
 from ingest import ingest_all_sources
@@ -20,6 +21,7 @@ from utils import (
     looks_like_general_question,
     normalize,
 )
+from ai import get_openai_client
 
 app = FastAPI()
 
@@ -156,7 +158,7 @@ def chat(req: ChatRequest):
 
         language = req.language if req.language in {"en", "es"} else detect_language(user_input)
 
-        session_id = req.session_id or __import__("uuid").uuid4().hex
+        session_id = req.session_id or str(uuid.uuid4())
         session = SESSION_STATE.setdefault(
             session_id,
             {
@@ -167,10 +169,12 @@ def chat(req: ChatRequest):
         )
         session["language"] = language
 
+        # Break out of pending location flow if user switches to a general question.
         if session["stage"] == "awaiting_location" and looks_like_general_question(text):
             session["stage"] = None
             session["saved_location"] = None
 
+        # If we are waiting for a location, prioritize that flow.
         if session["stage"] == "awaiting_location":
             location = detect_location(user_input, text)
 
@@ -201,6 +205,7 @@ def chat(req: ChatRequest):
             }
             return result
 
+        # Direct location-only queries.
         location = detect_location(user_input, text)
         if location:
             if location["kind"] == "state":
@@ -215,10 +220,12 @@ def chat(req: ChatRequest):
                 result["language"] = language
                 return result
 
+        # Educational questions should try retrieval first.
         if looks_like_general_question(text):
             user_region = infer_user_region(location)
             match = find_match(text, user_region=user_region, language=language)
-            if match:
+
+            if match and match["confidence"] in {"high", "medium"}:
                 return {
                     "reply": add_safety_footer(match["answer"], language),
                     "source": match["source"],
@@ -226,10 +233,14 @@ def chat(req: ChatRequest):
                     "title": match["title"],
                     "section_heading": match["section_heading"],
                     "source_site": match["source_site"],
+                    "confidence": match["confidence"],
+                    "score": match["score"],
+                    "second_score": match.get("second_score"),
                     "session_id": session_id,
                     "language": language,
                 }
 
+        # Help / distress flow.
         if is_help_trigger(text):
             detected_location = detect_location(user_input, text)
 
@@ -240,9 +251,11 @@ def chat(req: ChatRequest):
                     result = build_country_response(detected_location["value"], language=language)
 
                 prefix = (
-                    "I’m really sorry this may be happening.\n\nIf there is immediate danger, contact emergency services now.\n\n"
+                    "I’m really sorry this may be happening.\n\n"
+                    "If there is immediate danger, contact emergency services now.\n\n"
                     if language == "en"
-                    else "Siento mucho que esto pueda estar ocurriendo.\n\nSi hay peligro inmediato, contacta ahora con los servicios de emergencia.\n\n"
+                    else "Siento mucho que esto pueda estar ocurriendo.\n\n"
+                    "Si hay peligro inmediato, contacta ahora con los servicios de emergencia.\n\n"
                 )
                 result["reply"] = prefix + result["reply"]
                 result["session_id"] = session_id
@@ -254,9 +267,11 @@ def chat(req: ChatRequest):
             result["language"] = language
             return result
 
+        # General retrieval pass for non-help, non-location questions.
         user_region = infer_user_region(location)
         match = find_match(text, user_region=user_region, language=language)
-        if match:
+
+        if match and match["confidence"] in {"high", "medium"}:
             return {
                 "reply": add_safety_footer(match["answer"], language),
                 "source": match["source"],
@@ -264,12 +279,14 @@ def chat(req: ChatRequest):
                 "title": match["title"],
                 "section_heading": match["section_heading"],
                 "source_site": match["source_site"],
+                "confidence": match["confidence"],
+                "score": match["score"],
+                "second_score": match.get("second_score"),
                 "session_id": session_id,
                 "language": language,
             }
 
-        from ai import get_openai_client
-
+        # Low-confidence or no retrieval match falls back to OpenAI.
         client = get_openai_client()
         if not client:
             raise HTTPException(status_code=500, detail="Missing API key")
