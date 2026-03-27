@@ -178,11 +178,17 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
 
     combined = clean_answer_text("\n\n".join(selected_chunks))
 
-    # Only polish when retrieval looks decent.
-    if confidence in {"high", "medium"}:
-        answer = polish_retrieved_answer(query, combined, language=language)
-    else:
+    combined = clean_answer_text("\n\n".join(selected_chunks))
+    
+    # Skip OpenAI if content is already short
+    if len(combined) < 200:
         answer = combined
+    else:
+        # Only polish when retrieval looks decent
+        if confidence in {"high", "medium"}:
+            answer = polish_retrieved_answer(query, combined, language=language)
+        else:
+            answer = combined
 
     return {
         "source": best_row[0],
