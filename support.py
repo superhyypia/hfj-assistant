@@ -154,3 +154,35 @@ def build_help_prompt(location: dict | None, session_id: str, language: str = "e
         "title": title,
         "session_id": session_id,
     }
+
+def build_unknown_location_response(session_id: str, language: str = "en"):
+    if language == "es":
+        reply = (
+            "Siento mucho que esto pueda estar ocurriendo.\n\n"
+            "Si no sabes dónde estás, intenta priorizar tu seguridad inmediata.\n\n"
+            "• Si puedes, busca a una persona segura cerca de ti, como personal de una tienda, farmacia, hospital, estación o recepción\n"
+            "• Si estás en peligro inmediato, llama o pide a alguien que llame a los servicios de emergencia\n"
+            "• Si puedes usar tu teléfono, intenta compartir tu ubicación con una persona de confianza\n"
+            "• Si no puedes hablar con seguridad, intenta salir hacia un lugar público o concurrido\n\n"
+            "Si puedes, dime cualquier detalle que conozcas — por ejemplo el idioma de los carteles, un nombre de calle, una tienda, o el país aproximado — y te orientaré mejor."
+        )
+        title = "Apoyo inmediato"
+    else:
+        reply = (
+            "I’m really sorry this may be happening.\n\n"
+            "If you do not know where you are, focus on immediate safety first.\n\n"
+            "• If you can, look for a safe nearby person such as staff in a shop, pharmacy, hospital, station, or reception desk\n"
+            "• If there is immediate danger, call emergency services or ask someone nearby to call for you\n"
+            "• If you can use your phone safely, try sharing your location with someone you trust\n"
+            "• If you cannot speak safely, try moving toward a public or busy place\n\n"
+            "If you can, tell me anything you do know — for example the language on signs, a street name, a shop name, or the approximate country — and I’ll guide you further."
+        )
+        title = "Immediate support"
+
+    return {
+        "reply": reply,
+        "source": "https://hopeforjustice.org/get-help/",
+        "type": "hfj",
+        "title": title,
+        "session_id": session_id,
+    }
