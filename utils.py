@@ -182,9 +182,17 @@ def slugify_state(state_name: str) -> str:
 
 
 def is_help_trigger(text: str) -> bool:
+    text = text.lower().strip()
+
     triggers = [
         "i need help",
         "help me",
+        "i am in danger",
+        "i'm in danger",
+        "someone is in danger",
+        "i feel unsafe",
+        "i am unsafe",
+        "i'm unsafe",
         "i think i am being trafficked",
         "i think i'm being trafficked",
         "i am being trafficked",
@@ -207,6 +215,7 @@ def is_help_trigger(text: str) -> bool:
         "no puedo salir",
         "alguien no puede salir",
     ]
+
     return any(t in text for t in triggers)
 
 
