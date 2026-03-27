@@ -149,6 +149,36 @@ def retrieval_confidence(best_score: float, second_score: float | None = None) -
             return "medium"
     return "low"
 
+def extract_short_answer(text: str, query: str) -> str:
+    import re
+
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    query_terms = [w for w in query.lower().split() if len(w) > 3]
+
+    scored = []
+
+    for s in sentences:
+        s_l = s.lower()
+        score = sum(1 for t in query_terms if t in s_l)
+
+        # boost useful patterns
+        if any(x in s_l for x in ["call", "contact", "hotline", "help", "sign", "warning"]):
+            score += 2
+
+        if len(s.strip()) < 40:
+            continue
+
+        scored.append((score, s.strip()))
+
+    scored.sort(reverse=True)
+
+    top = [s for _, s in scored[:4]]
+
+    if not top:
+        return text[:300]
+
+    # format as bullets
+    return "\n".join(f"• {s}" for s in top)
 
 def find_match(query: str, user_region: str | None = None, language: str = "en"):
     with get_db_connection() as conn:
@@ -187,7 +217,8 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
     confidence = retrieval_confidence(best_score, second_score)
 
     combined = clean_answer_text("\n\n".join(selected_chunks))
-    answer = translate_to_spanish(combined) if language == "es" else combined
+    short_answer = extract_short_answer(combined, query)
+    answer = translate_to_spanish(short_answer) if language == "es" else short_answer
 
     return {
         "source": best_row[0],
