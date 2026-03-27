@@ -211,15 +211,29 @@ def looks_like_general_question(text: str) -> bool:
 
 
 def detect_us_state(text: str, original: str) -> dict | None:
+    import re
+
+    # Full state names
     for key, value in US_STATES.items():
         if re.search(rf"\b{re.escape(key)}\b", text):
             return {"kind": "state", "value": value, "confidence": "high"}
 
-    upper_tokens = re.findall(r"\b[A-Z]{2}\b", original)
-    for token in upper_tokens:
+    # State abbreviations, but ignore common English words
+    tokens = re.findall(r"\b[A-Z]{2}\b", original)
+
+    for token in tokens:
         token_lower = token.lower()
+
+        if token_lower in {"in", "on", "at", "by", "to", "of", "it", "is"}:
+            continue
+
         if token_lower in STATE_ABBREVIATIONS:
-            return {"kind": "state", "value": STATE_ABBREVIATIONS[token_lower], "confidence": "medium"}
+            return {
+                "kind": "state",
+                "value": STATE_ABBREVIATIONS[token_lower],
+                "confidence": "medium",
+            }
+
     return None
 
 
