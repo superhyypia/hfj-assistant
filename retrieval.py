@@ -183,3 +183,12 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         "second_score": round(second_score, 2) if second_score is not None else None,
         "confidence": confidence,
     }
+
+# Hotline / contact intent boost
+if any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"]):
+    if content_type == "support":
+        score += 10.0
+
+    # Extra boost for hotline source
+    if source_site == "humantraffickinghotline":
+        score += 8.0
