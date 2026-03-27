@@ -1,6 +1,8 @@
+import json
 import requests
 from bs4 import BeautifulSoup
 
+from ai import embed_texts
 from db import get_db_connection
 from utils import normalize_whitespace
 
@@ -65,40 +67,27 @@ CONTENT_SOURCES = [
         "region": "uk",
         "content_type": "reporting",
     },
-
     {
-    "url": "https://humantraffickinghotline.org/en/contact",
-    "source_site": "humantraffickinghotline",
-    "region": "united_states",
-    "content_type": "support",
-},
-{
-    "url": "https://humantraffickinghotline.org/en/find-local-services",
-    "source_site": "humantraffickinghotline",
-    "region": "united_states",
-    "content_type": "support",
-},
-{
-    "url": "https://humantraffickinghotline.org/en/statistics/california",
-    "source_site": "humantraffickinghotline",
-    "region": "united_states",
-    "content_type": "support",
-},
-{
-    "url": "https://humantraffickinghotline.org/en/statistics/minnesota",
-    "source_site": "humantraffickinghotline",
-    "region": "united_states",
-    "content_type": "support",
-},
-{
-    "url": "https://humantraffickinghotline.org/en/human-trafficking/recognizing-signs",
-    "source_site": "humantraffickinghotline",
-    "region": "united_states",
-    "content_type": "education",
-},
+        "url": "https://humantraffickinghotline.org/en/contact",
+        "source_site": "humantraffickinghotline",
+        "region": "united_states",
+        "content_type": "support",
+    },
+    {
+        "url": "https://humantraffickinghotline.org/en/find-local-services",
+        "source_site": "humantraffickinghotline",
+        "region": "united_states",
+        "content_type": "support",
+    },
+    {
+        "url": "https://humantraffickinghotline.org/en/human-trafficking/recognizing-signs",
+        "source_site": "humantraffickinghotline",
+        "region": "united_states",
+        "content_type": "education",
+    },
 ]
 
-USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.3)"
+USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.4)"
 
 JUNK_PATTERNS = [
     "out of date browser",
@@ -228,8 +217,11 @@ def upsert_sections(sections: list[dict]) -> int:
     if not sections:
         return 0
 
+    embeddings = embed_texts([section["content"] for section in sections])
+
     rows = []
     for idx, section in enumerate(sections, start=1):
+        embedding_json = json.dumps(embeddings[idx - 1]) if idx - 1 < len(embeddings) else None
         rows.append(
             (
                 section["source_url"],
@@ -240,6 +232,7 @@ def upsert_sections(sections: list[dict]) -> int:
                 idx,
                 section["section_heading"],
                 section["content"],
+                embedding_json,
             )
         )
 
@@ -250,8 +243,8 @@ def upsert_sections(sections: list[dict]) -> int:
             cur.executemany(
                 """
                 INSERT INTO hfj_content_chunks
-                (source_url, source_site, region, content_type, page_title, chunk_index, section_heading, content)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (source_url, source_site, region, content_type, page_title, chunk_index, section_heading, content, embedding_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 rows,
             )
