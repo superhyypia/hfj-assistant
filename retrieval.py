@@ -1,5 +1,5 @@
 from db import get_db_connection
-from ai import translate_to_spanish
+from ai import polish_retrieved_answer
 from utils import clean_answer_text
 
 
@@ -26,7 +26,6 @@ def score_chunk(
 
     score = 0.0
 
-    # Basic term scoring
     for term in query_terms:
         if term in title_l:
             score += 5.0
@@ -35,7 +34,6 @@ def score_chunk(
         if term in content_l:
             score += 1.5
 
-    # Strong phrase scoring
     exact_phrases = [
         "human trafficking",
         "spot the signs",
@@ -68,21 +66,16 @@ def score_chunk(
             if phrase in content_l:
                 score += 5.0
 
-    # Hotline / contact intent boost
     if any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"]):
         if content_type == "support":
             score += 10.0
-
         if source_site == "humantraffickinghotline":
             score += 8.0
-
         if "contact" in title_l or "contact" in heading_l:
             score += 10.0
-
         if "hotline" in title_l or "hotline" in heading_l or "hotline" in content_l:
             score += 12.0
 
-    # Question intent bonuses
     if any(x in query_l for x in ["what is", "qué es", "que es"]):
         if content_type == "education":
             score += 4.0
@@ -99,7 +92,6 @@ def score_chunk(
         if content_type == "reporting":
             score += 6.0
 
-    # Region/source bonuses
     if user_region and region == user_region:
         score += 8.0
 
@@ -112,11 +104,9 @@ def score_chunk(
     if user_region == "united_states" and source_site == "humantraffickinghotline":
         score += 6.0
 
-    # Penalize vague content if no strong heading match
     if heading_l and not any(term in heading_l for term in query_terms):
         score -= 1.5
 
-    # Penalize support pages for educational queries
     if content_type == "support" and any(
         x in query_l for x in ["what is", "qué es", "que es", "sign", "señales", "senales"]
     ):
@@ -149,36 +139,6 @@ def retrieval_confidence(best_score: float, second_score: float | None = None) -
             return "medium"
     return "low"
 
-def extract_short_answer(text: str, query: str) -> str:
-    import re
-
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    query_terms = [w for w in query.lower().split() if len(w) > 3]
-
-    scored = []
-
-    for s in sentences:
-        s_l = s.lower()
-        score = sum(1 for t in query_terms if t in s_l)
-
-        # boost useful patterns
-        if any(x in s_l for x in ["call", "contact", "hotline", "help", "sign", "warning"]):
-            score += 2
-
-        if len(s.strip()) < 40:
-            continue
-
-        scored.append((score, s.strip()))
-
-    scored.sort(reverse=True)
-
-    top = [s for _, s in scored[:4]]
-
-    if not top:
-        return text[:300]
-
-    # format as bullets
-    return "\n".join(f"• {s}" for s in top)
 
 def find_match(query: str, user_region: str | None = None, language: str = "en"):
     with get_db_connection() as conn:
@@ -217,8 +177,12 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
     confidence = retrieval_confidence(best_score, second_score)
 
     combined = clean_answer_text("\n\n".join(selected_chunks))
-    short_answer = extract_short_answer(combined, query)
-    answer = translate_to_spanish(short_answer) if language == "es" else short_answer
+
+    # Only polish when retrieval looks decent.
+    if confidence in {"high", "medium"}:
+        answer = polish_retrieved_answer(query, combined, language=language)
+    else:
+        answer = combined
 
     return {
         "source": best_row[0],
