@@ -239,6 +239,13 @@ def normalize_whitespace(text: str) -> str:
     return text.strip()
 
 
+def clean_answer_text(text: str) -> str:
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
 def normalize_country_key(name: str) -> str:
     name = name.lower().strip()
     mapping = {
@@ -293,12 +300,15 @@ def looks_like_general_question(text: str) -> bool:
         "spot the signs",
         "signs of trafficking",
         "what are the signs",
+        "what are signs of",
         "human trafficking",
         "labour trafficking",
         "labor trafficking",
         "sex trafficking",
         "sexual exploitation",
         "forced sexual exploitation",
+        "signs of exploitation",
+        "sexual exploitation signs",
         "forced labour",
         "forced labor",
         "define trafficking",
@@ -306,6 +316,8 @@ def looks_like_general_question(text: str) -> bool:
         "warning signs",
         "indicators of trafficking",
         "indicators of exploitation",
+        "how to identify trafficking",
+        "grooming signs",
     ]
     return any(t in text for t in triggers)
 
@@ -386,6 +398,7 @@ def add_safety_footer(text: str) -> str:
         text.strip()
         + "\n\nIf someone may be in danger, please seek help from official services immediately."
     )
+
 
 def init_db():
     with get_db_connection() as conn:
@@ -481,7 +494,6 @@ def init_db():
                 ],
             )
         conn.commit()
-
 
 
 def fetch_page_html(url: str) -> str:
@@ -815,17 +827,25 @@ def find_match(query: str, user_region: str | None = None):
     if not scored:
         return None
 
-    top_chunks = [row for _, row in scored[:3]]
-    combined = "\n\n".join(chunk[6] for chunk in top_chunks)
+    best_score, best_row = scored[0]
+    selected_chunks = [best_row[6]]
+
+    for score, row in scored[1:3]:
+        same_section = row[5] == best_row[5]
+        close_score = score >= best_score * 0.85
+        if same_section and close_score:
+            selected_chunks.append(row[6])
+
+    combined = clean_answer_text("\n\n".join(selected_chunks))
 
     return {
-        "source": top_chunks[0][0],
-        "source_site": top_chunks[0][1],
-        "region": top_chunks[0][2],
-        "content_type": top_chunks[0][3],
-        "title": top_chunks[0][4],
-        "section_heading": top_chunks[0][5],
-        "answer": combined[:1400],
+        "source": best_row[0],
+        "source_site": best_row[1],
+        "region": best_row[2],
+        "content_type": best_row[3],
+        "title": best_row[4],
+        "section_heading": best_row[5],
+        "answer": combined[:1200],
     }
 
 
@@ -899,7 +919,7 @@ def build_help_prompt(location: dict | None, session_id: str):
                 "I’m really sorry this may be happening.\n\n"
                 "If there is immediate danger, contact emergency services now.\n\n"
                 f"I understand you may be in {location['value']}. "
-                "I can give you the safest support options for that location."
+                "If that is right, I can guide you to support options for that location."
             ),
             "source": "https://hopeforjustice.org/get-help/",
             "type": "hfj",
