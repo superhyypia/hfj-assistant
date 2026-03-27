@@ -1,6 +1,23 @@
+import json
+import math
+
 from db import get_db_connection
 from ai import polish_retrieved_answer
 from utils import clean_answer_text
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return -1.0
+
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+
+    if norm_a == 0 or norm_b == 0:
+        return -1.0
+
+    return dot / (norm_a * norm_b)
 
 
 def score_chunk(
@@ -12,6 +29,7 @@ def score_chunk(
     region: str,
     content_type: str,
     user_region: str | None,
+    vector_similarity: float = 0.0,
 ) -> float:
     import re
 
@@ -25,6 +43,9 @@ def score_chunk(
         return 0.0
 
     score = 0.0
+
+    # semantic base
+    score += max(vector_similarity, 0.0) * 40.0
 
     for term in query_terms:
         if term in title_l:
@@ -140,20 +161,47 @@ def retrieval_confidence(best_score: float, second_score: float | None = None) -
     return "low"
 
 
-def find_match(query: str, user_region: str | None = None, language: str = "en"):
+def vector_candidates(query: str, limit: int = 20) -> list[tuple[float, tuple]]:
+    from ai import embed_text
+
+    query_embedding = embed_text(query)
+    if not query_embedding:
+        return []
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT source_url, source_site, region, content_type, page_title, section_heading, content
+                SELECT source_url, source_site, region, content_type, page_title, section_heading, content, embedding_json
                 FROM hfj_content_chunks
+                WHERE embedding_json IS NOT NULL
                 """
             )
             rows = cur.fetchall()
 
     scored = []
-
     for row in rows:
+        try:
+            emb = json.loads(row[7]) if row[7] else None
+        except Exception:
+            emb = None
+
+        sim = cosine_similarity(query_embedding, emb) if emb else -1.0
+        if sim > 0:
+            scored.append((sim, row))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return scored[:limit]
+
+
+def find_match(query: str, user_region: str | None = None, language: str = "en"):
+    candidates = vector_candidates(query, limit=20)
+
+    if not candidates:
+        return None
+
+    reranked = []
+    for similarity, row in candidates:
         score = score_chunk(
             query=query,
             title=row[4],
@@ -163,28 +211,25 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
             region=row[2],
             content_type=row[3],
             user_region=user_region,
+            vector_similarity=similarity,
         )
         if score > 2:
-            scored.append((score, row))
+            reranked.append((score, row))
 
-    scored.sort(reverse=True, key=lambda x: x[0])
+    reranked.sort(reverse=True, key=lambda x: x[0])
 
-    if not scored:
+    if not reranked:
         return None
 
-    second_score = scored[1][0] if len(scored) > 1 else None
-    best_score, best_row, selected_chunks = select_best_chunks(scored)
+    second_score = reranked[1][0] if len(reranked) > 1 else None
+    best_score, best_row, selected_chunks = select_best_chunks(reranked)
     confidence = retrieval_confidence(best_score, second_score)
 
     combined = clean_answer_text("\n\n".join(selected_chunks))
 
-    combined = clean_answer_text("\n\n".join(selected_chunks))
-    
-    # Skip OpenAI if content is already short
     if len(combined) < 200:
         answer = combined
     else:
-        # Only polish when retrieval looks decent
         if confidence in {"high", "medium"}:
             answer = polish_retrieved_answer(query, combined, language=language)
         else:
