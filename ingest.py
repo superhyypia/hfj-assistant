@@ -65,6 +65,37 @@ CONTENT_SOURCES = [
         "region": "uk",
         "content_type": "reporting",
     },
+
+    {
+    "url": "https://humantraffickinghotline.org/en/contact",
+    "source_site": "humantraffickinghotline",
+    "region": "united_states",
+    "content_type": "support",
+},
+{
+    "url": "https://humantraffickinghotline.org/en/find-local-services",
+    "source_site": "humantraffickinghotline",
+    "region": "united_states",
+    "content_type": "support",
+},
+{
+    "url": "https://humantraffickinghotline.org/en/statistics/california",
+    "source_site": "humantraffickinghotline",
+    "region": "united_states",
+    "content_type": "support",
+},
+{
+    "url": "https://humantraffickinghotline.org/en/statistics/minnesota",
+    "source_site": "humantraffickinghotline",
+    "region": "united_states",
+    "content_type": "support",
+},
+{
+    "url": "https://humantraffickinghotline.org/en/human-trafficking/recognizing-signs",
+    "source_site": "humantraffickinghotline",
+    "region": "united_states",
+    "content_type": "education",
+},
 ]
 
 USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.3)"
