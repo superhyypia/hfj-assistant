@@ -7,7 +7,6 @@ from db import init_db
 from ingest import ingest_all_sources
 from retrieval import find_match
 
-)
 from support import (
     build_country_response,
     build_help_prompt,
