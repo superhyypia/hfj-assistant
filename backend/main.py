@@ -1,13 +1,11 @@
-from db import init_db, check_db_health    
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uuid
 
-
 from agent import is_low_visibility_signal, plan_next_actions
 from ai import get_openai_client
-from db import init_db
+from db import init_db, check_db_health, get_sources, get_db_connection
 from ingest import ingest_all_sources
 from retrieval import find_match
 from support import (
@@ -32,42 +30,6 @@ from utils import (
 
 app = FastAPI()
 
-init_db()
-
-@app.get("/admin/sources")
-def get_admin_sources():
-    return {
-        "sources": [
-            {
-                "id": 1,
-                "name": "Hope for Justice",
-                "domain": "hopeforjustice.org",
-                "region": "Global",
-                "source_type": "official",
-                "priority": 100,
-                "status": "active",
-            },
-            {
-                "id": 2,
-                "name": "HSE",
-                "domain": "hse.ie",
-                "region": "Ireland",
-                "source_type": "official",
-                "priority": 95,
-                "status": "active",
-            },
-            {
-                "id": 3,
-                "name": "Modern Slavery Helpline",
-                "domain": "modernslaveryhelpline.org",
-                "region": "UK",
-                "source_type": "secondary",
-                "priority": 85,
-                "status": "active",
-            },
-        ]
-    }
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -76,19 +38,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/admin/health")
-def admin_health():
-    try:
-        db_ok = check_db_health()
-        return {
-            "status": "ok" if db_ok else "error",
-            "database": "connected" if db_ok else "not connected"
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
 
 class ChatRequest(BaseModel):
     message: str
@@ -112,6 +61,32 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/admin/health")
+def admin_health():
+    try:
+        db_ok = check_db_health()
+        return {
+            "status": "ok" if db_ok else "error",
+            "database": "connected" if db_ok else "not connected",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+@app.get("/admin/sources")
+def get_admin_sources():
+    try:
+        return {"sources": get_sources()}
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
 @app.get("/db-check")
 def db_check():
     try:
@@ -130,8 +105,6 @@ def db_check():
 
 @app.get("/routes")
 def routes():
-    from db import get_db_connection
-
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -162,8 +135,6 @@ def routes():
 
 @app.get("/content-check")
 def content_check():
-    from db import get_db_connection
-
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -294,7 +265,7 @@ def chat(req: ChatRequest):
             return result
 
         if plan["actions"] == ["ask_location_again"]:
-            result = {
+            return {
                 "reply": (
                     "Please tell me your country or state so I can give you the right support options."
                     if language == "en"
@@ -307,7 +278,6 @@ def chat(req: ChatRequest):
                 "language": language,
                 "agent_plan": plan,
             }
-            return result
 
         if plan["actions"] in (["answer_from_retrieval"], ["answer_with_polish"]) and retrieval_match:
             return {
