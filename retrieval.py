@@ -35,8 +35,33 @@ def score_chunk(
 
     query_l = query.lower()
     title_l = (title or "").lower()
+    hotline_intent = any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"])
     heading_l = (heading or "").lower()
     content_l = (content or "").lower()
+
+    hotline_intent = any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"])
+
+if hotline_intent:
+    if content_type == "support":
+        score += 25.0
+
+    if source_site == "humantraffickinghotline":
+        score += 15.0
+
+    if "contact us" in title_l or "contact us" in heading_l:
+        score += 35.0
+
+    if "contact" in title_l or "contact" in heading_l:
+        score += 20.0
+
+    if "find local services" in title_l or "find local services" in heading_l:
+        score += 18.0
+
+    if "hotline" in title_l or "hotline" in heading_l:
+        score += 18.0
+
+    if "recognizing the signs" in title_l:
+        score -= 15.0
 
     query_terms = [t for t in re.findall(r"[a-z0-9áéíóúñ]+", query_l) if len(t) > 2]
     if not query_terms:
