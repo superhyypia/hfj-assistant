@@ -44,6 +44,15 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     language: str | None = None
 
+class SourceCreate(BaseModel):
+    name: str
+    domain: str
+    base_url: str | None = None
+    region: str = "global"
+    source_type: str = "official"
+    priority: int = 100
+    status: str = "active"
+
 
 @app.on_event("startup")
 def startup_event():
@@ -85,6 +94,38 @@ def get_admin_sources():
             "message": str(e),
         }
 
+@app.post("/admin/sources")
+def create_source(source: SourceCreate):
+    try:
+        from db import get_db_connection
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO hfj_sources
+                    (name, domain, base_url, region, source_type, priority, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        source.name,
+                        source.domain,
+                        source.base_url,
+                        source.region,
+                        source.source_type,
+                        source.priority,
+                        source.status,
+                    ),
+                )
+                new_id = cur.fetchone()[0]
+
+            conn.commit()
+
+        return {"status": "ok", "id": new_id}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/db-check")
 def db_check():
