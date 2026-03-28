@@ -134,3 +134,10 @@ def init_db():
             )
 
         conn.commit()
+
+def check_db_health():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1;")
+            result = cur.fetchone()
+            return result[0] == 1
