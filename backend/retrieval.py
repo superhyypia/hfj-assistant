@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Optional
 
 from db import get_db_connection
@@ -6,7 +7,7 @@ from ai import embed_texts
 
 
 # ---------------------------
-# Cosine similarity
+# Similarity
 # ---------------------------
 def cosine_similarity(a, b):
     if not a or not b or len(a) != len(b):
@@ -23,7 +24,40 @@ def cosine_similarity(a, b):
 
 
 # ---------------------------
-# Keyword fallback search
+# Extraction helpers
+# ---------------------------
+def extract_phone_number(text: str) -> Optional[str]:
+    matches = re.findall(r"\b\d{3,4}\s?\d{3}\s?\d{3}\b", text)
+    return matches[0] if matches else None
+
+
+def clean_sentence(text: str, max_len: int = 220) -> str:
+    text = text.strip().replace("\n", " ")
+    return text[:max_len].strip()
+
+
+def format_answer(answer: str, source_site: str) -> str:
+    phone = extract_phone_number(answer)
+
+    source_name = source_site.replace("_", " ").title()
+
+    if phone:
+        return (
+            f"The Garda Confidential Line is {phone}.\n\n"
+            f"You can use this number to report concerns confidentially.\n\n"
+            f"Source: {source_name}"
+        )
+
+    summary = clean_sentence(answer)
+
+    return (
+        f"{summary}\n\n"
+        f"Source: {source_name}"
+    )
+
+
+# ---------------------------
+# Keyword fallback
 # ---------------------------
 def keyword_search(query: str, limit: int = 5) -> Optional[dict]:
     terms = [t.strip().lower() for t in query.split() if len(t) > 3]
@@ -53,7 +87,7 @@ def keyword_search(query: str, limit: int = 5) -> Optional[dict]:
     row = rows[0]
 
     return {
-        "answer": row[0],
+        "answer": format_answer(row[0], row[4]),
         "source": row[1],
         "title": row[2],
         "section_heading": row[3],
@@ -64,10 +98,9 @@ def keyword_search(query: str, limit: int = 5) -> Optional[dict]:
 
 
 # ---------------------------
-# Main retrieval function
+# Main retrieval
 # ---------------------------
 def find_match(query: str, user_region: str | None = None, language: str = "en"):
-    # Step 1 — embed query
     query_embedding = embed_texts([query])[0]
 
     with get_db_connection() as conn:
@@ -81,8 +114,7 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
                     page_title,
                     section_heading,
                     source_site,
-                    region,
-                    content_type
+                    region
                 FROM hfj_content_chunks
                 """
             )
@@ -93,7 +125,6 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
 
     query_l = query.lower()
 
-    # Step 2 — semantic + rule scoring
     for row in rows:
         content = row[0]
         embedding_json = row[1]
@@ -105,11 +136,10 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         similarity = cosine_similarity(query_embedding, embedding)
 
         score = similarity
-
         content_l = content.lower()
 
         # ---------------------------
-        # Keyword boosts (very important)
+        # Keyword boosts
         # ---------------------------
         if "garda" in query_l and "garda" in content_l:
             score += 0.25
@@ -120,21 +150,16 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         if "line" in query_l and "call" in content_l:
             score += 0.1
 
-        # General term overlap boost
+        # General word overlap boost
         for word in query_l.split():
             if len(word) > 4 and word in content_l:
                 score += 0.02
 
-        # ---------------------------
         # Region boost
-        # ---------------------------
         region = row[6]
         if user_region and region == user_region:
             score += 0.1
 
-        # ---------------------------
-        # Track best
-        # ---------------------------
         if score > best_score:
             best_score = score
             best = {
@@ -148,12 +173,20 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
             }
 
     # ---------------------------
-    # Step 3 — fallback to keyword search
+    # Keyword fallback
     # ---------------------------
     if not best or best_score < 0.75:
         keyword_result = keyword_search(query)
-
         if keyword_result:
             return keyword_result
+
+    # ---------------------------
+    # Format final answer
+    # ---------------------------
+    if best:
+        best["answer"] = format_answer(
+            best["answer"],
+            best.get("source_site", "source"),
+        )
 
     return best
