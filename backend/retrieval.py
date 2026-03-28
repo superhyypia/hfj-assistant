@@ -1,18 +1,20 @@
 import json
-import math
+from typing import Optional
 
 from db import get_db_connection
-from ai import polish_retrieved_answer
-from utils import clean_answer_text
+from ai import embed_texts
 
 
-def cosine_similarity(a: list[float], b: list[float]) -> float:
+# ---------------------------
+# Cosine similarity
+# ---------------------------
+def cosine_similarity(a, b):
     if not a or not b or len(a) != len(b):
         return -1.0
 
     dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
 
     if norm_a == 0 or norm_b == 0:
         return -1.0
@@ -20,248 +22,138 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def score_chunk(
-    query: str,
-    title: str,
-    heading: str | None,
-    content: str,
-    source_site: str,
-    region: str,
-    content_type: str,
-    user_region: str | None,
-    vector_similarity: float = 0.0,
-) -> float:
-    import re
+# ---------------------------
+# Keyword fallback search
+# ---------------------------
+def keyword_search(query: str, limit: int = 5) -> Optional[dict]:
+    terms = [t.strip().lower() for t in query.split() if len(t) > 3]
 
-    query_l = query.lower()
-    title_l = (title or "").lower()
-    heading_l = (heading or "").lower()
-    content_l = (content or "").lower()
+    if not terms:
+        return None
 
-    query_terms = [t for t in re.findall(r"[a-z0-9áéíóúñ]+", query_l) if len(t) > 2]
-    if not query_terms:
-        return 0.0
+    like_clauses = " OR ".join(["content ILIKE %s" for _ in terms])
+    values = [f"%{t}%" for t in terms]
 
-    score = 0.0
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT content, source_url, page_title, section_heading, source_site
+                FROM hfj_content_chunks
+                WHERE {like_clauses}
+                LIMIT {limit}
+                """,
+                values,
+            )
+            rows = cur.fetchall()
 
-    # semantic base
-    score += max(vector_similarity, 0.0) * 40.0
+    if not rows:
+        return None
 
-    hotline_intent = any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"])
+    row = rows[0]
 
-    if hotline_intent:
-        if content_type == "support":
-            score += 25.0
-
-        if source_site == "humantraffickinghotline":
-            score += 15.0
-
-        if "contact us" in title_l or "contact us" in heading_l:
-            score += 35.0
-
-        if "contact" in title_l or "contact" in heading_l:
-            score += 20.0
-
-        if "find local services" in title_l or "find local services" in heading_l:
-            score += 18.0
-
-        if "hotline" in title_l or "hotline" in heading_l:
-            score += 18.0
-
-        if "recognizing the signs" in title_l:
-            score -= 15.0
-
-    for term in query_terms:
-        if term in title_l:
-            score += 5.0
-        if term in heading_l:
-            score += 7.0
-        if term in content_l:
-            score += 1.5
-
-    exact_phrases = [
-        "human trafficking",
-        "spot the signs",
-        "warning signs",
-        "signs of trafficking",
-        "forced labour",
-        "forced labor",
-        "sex trafficking",
-        "sexual exploitation",
-        "forced sexual exploitation",
-        "domestic servitude",
-        "modern slavery",
-        "trata de personas",
-        "explotación sexual",
-        "explotacion sexual",
-        "señales de trata",
-        "senales de trata",
-        "signos de explotación",
-        "signos de explotacion",
-        "human trafficking hotline",
-        "national human trafficking hotline",
-        "find local services",
-        "contact us",
-    ]
-
-    for phrase in exact_phrases:
-        if phrase in query_l:
-            if phrase in title_l:
-                score += 12.0
-            if phrase in heading_l:
-                score += 14.0
-            if phrase in content_l:
-                score += 5.0
-
-    if any(x in query_l for x in ["what is", "qué es", "que es"]):
-        if content_type == "education":
-            score += 4.0
-
-    if any(x in query_l for x in ["sign", "señales", "senales", "warning", "indicator", "indicators", "signos"]):
-        if content_type == "education":
-            score += 6.0
-
-    if any(x in query_l for x in ["help", "support", "ayuda", "apoyo"]):
-        if content_type == "support":
-            score += 6.0
-
-    if "report" in query_l:
-        if content_type == "reporting":
-            score += 6.0
-
-    if user_region and region == user_region:
-        score += 8.0
-
-    if user_region == "ireland" and source_site == "hse":
-        score += 5.0
-
-    if user_region == "uk" and source_site == "modernslavery_uk":
-        score += 5.0
-
-    if user_region == "united_states" and source_site == "humantraffickinghotline":
-        score += 6.0
-
-    if heading_l and not any(term in heading_l for term in query_terms):
-        score -= 1.5
-
-    if (
-        content_type == "support"
-        and any(x in query_l for x in ["what is", "qué es", "que es", "sign", "señales", "senales"])
-        and not hotline_intent
-    ):
-        score -= 2.0
-
-    return max(score, 0.0)
+    return {
+        "answer": row[0],
+        "source": row[1],
+        "title": row[2],
+        "section_heading": row[3],
+        "source_site": row[4],
+        "confidence": 0.6,
+        "score": 0.6,
+    }
 
 
-def select_best_chunks(scored_rows: list[tuple[float, tuple]]) -> tuple[float, tuple, list[str]]:
-    best_score, best_row = scored_rows[0]
-    selected_chunks = [best_row[6]]
-
-    for score, row in scored_rows[1:5]:
-        same_section = row[5] == best_row[5]
-        same_page = row[4] == best_row[4]
-        close_score = score >= best_score * 0.88
-
-        if same_section and same_page and close_score:
-            if row[6] not in selected_chunks:
-                selected_chunks.append(row[6])
-
-    return best_score, best_row, selected_chunks
-
-
-def retrieval_confidence(best_score: float, second_score: float | None = None) -> str:
-    if best_score >= 28:
-        return "high"
-    if best_score >= 16:
-        if second_score is None or best_score >= second_score * 1.25:
-            return "medium"
-    return "low"
-
-
-def vector_candidates(query: str, limit: int = 20) -> list[tuple[float, tuple]]:
-    from ai import embed_text
-
-    query_embedding = embed_text(query)
-    if not query_embedding:
-        return []
+# ---------------------------
+# Main retrieval function
+# ---------------------------
+def find_match(query: str, user_region: str | None = None, language: str = "en"):
+    # Step 1 — embed query
+    query_embedding = embed_texts([query])[0]
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT source_url, source_site, region, content_type, page_title, section_heading, content, embedding_json
+                SELECT
+                    content,
+                    embedding_json,
+                    source_url,
+                    page_title,
+                    section_heading,
+                    source_site,
+                    region,
+                    content_type
                 FROM hfj_content_chunks
-                WHERE embedding_json IS NOT NULL
                 """
             )
             rows = cur.fetchall()
 
-    scored = []
+    best = None
+    best_score = -1.0
+
+    query_l = query.lower()
+
+    # Step 2 — semantic + rule scoring
     for row in rows:
-        try:
-            emb = json.loads(row[7]) if row[7] else None
-        except Exception:
-            emb = None
+        content = row[0]
+        embedding_json = row[1]
 
-        sim = cosine_similarity(query_embedding, emb) if emb else -1.0
-        if sim > 0:
-            scored.append((sim, row))
+        if not embedding_json:
+            continue
 
-    scored.sort(reverse=True, key=lambda x: x[0])
-    return scored[:limit]
+        embedding = json.loads(embedding_json)
+        similarity = cosine_similarity(query_embedding, embedding)
 
+        score = similarity
 
-def find_match(query: str, user_region: str | None = None, language: str = "en"):
-    candidates = vector_candidates(query, limit=20)
+        content_l = content.lower()
 
-    if not candidates:
-        return None
+        # ---------------------------
+        # Keyword boosts (very important)
+        # ---------------------------
+        if "garda" in query_l and "garda" in content_l:
+            score += 0.25
 
-    reranked = []
-    for similarity, row in candidates:
-        score = score_chunk(
-            query=query,
-            title=row[4],
-            heading=row[5],
-            content=row[6],
-            source_site=row[1],
-            region=row[2],
-            content_type=row[3],
-            user_region=user_region,
-            vector_similarity=similarity,
-        )
-        if score > 2:
-            reranked.append((score, row))
+        if "confidential" in query_l and "confidential" in content_l:
+            score += 0.15
 
-    reranked.sort(reverse=True, key=lambda x: x[0])
+        if "line" in query_l and "call" in content_l:
+            score += 0.1
 
-    if not reranked:
-        return None
+        # General term overlap boost
+        for word in query_l.split():
+            if len(word) > 4 and word in content_l:
+                score += 0.02
 
-    second_score = reranked[1][0] if len(reranked) > 1 else None
-    best_score, best_row, selected_chunks = select_best_chunks(reranked)
-    confidence = retrieval_confidence(best_score, second_score)
+        # ---------------------------
+        # Region boost
+        # ---------------------------
+        region = row[6]
+        if user_region and region == user_region:
+            score += 0.1
 
-    combined = clean_answer_text("\n\n".join(selected_chunks))
+        # ---------------------------
+        # Track best
+        # ---------------------------
+        if score > best_score:
+            best_score = score
+            best = {
+                "answer": content,
+                "source": row[2],
+                "title": row[3],
+                "section_heading": row[4],
+                "source_site": row[5],
+                "confidence": round(score, 3),
+                "score": round(score, 3),
+            }
 
-    if len(combined) < 200:
-        answer = combined
-    else:
-        if confidence in {"high", "medium"}:
-            answer = polish_retrieved_answer(query, combined, language=language)
-        else:
-            answer = combined
+    # ---------------------------
+    # Step 3 — fallback to keyword search
+    # ---------------------------
+    if not best or best_score < 0.75:
+        keyword_result = keyword_search(query)
 
-    return {
-        "source": best_row[0],
-        "source_site": best_row[1],
-        "region": best_row[2],
-        "content_type": best_row[3],
-        "title": best_row[4],
-        "section_heading": best_row[5],
-        "answer": answer[:1200],
-        "score": round(best_score, 2),
-        "second_score": round(second_score, 2) if second_score is not None else None,
-        "confidence": confidence,
-    }
+        if keyword_result:
+            return keyword_result
+
+    return best
