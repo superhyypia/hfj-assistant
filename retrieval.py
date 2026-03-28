@@ -35,33 +35,8 @@ def score_chunk(
 
     query_l = query.lower()
     title_l = (title or "").lower()
-    hotline_intent = any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"])
     heading_l = (heading or "").lower()
     content_l = (content or "").lower()
-
-    hotline_intent = any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"])
-
-if hotline_intent:
-    if content_type == "support":
-        score += 25.0
-
-    if source_site == "humantraffickinghotline":
-        score += 15.0
-
-    if "contact us" in title_l or "contact us" in heading_l:
-        score += 35.0
-
-    if "contact" in title_l or "contact" in heading_l:
-        score += 20.0
-
-    if "find local services" in title_l or "find local services" in heading_l:
-        score += 18.0
-
-    if "hotline" in title_l or "hotline" in heading_l:
-        score += 18.0
-
-    if "recognizing the signs" in title_l:
-        score -= 15.0
 
     query_terms = [t for t in re.findall(r"[a-z0-9áéíóúñ]+", query_l) if len(t) > 2]
     if not query_terms:
@@ -71,6 +46,30 @@ if hotline_intent:
 
     # semantic base
     score += max(vector_similarity, 0.0) * 40.0
+
+    hotline_intent = any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"])
+
+    if hotline_intent:
+        if content_type == "support":
+            score += 25.0
+
+        if source_site == "humantraffickinghotline":
+            score += 15.0
+
+        if "contact us" in title_l or "contact us" in heading_l:
+            score += 35.0
+
+        if "contact" in title_l or "contact" in heading_l:
+            score += 20.0
+
+        if "find local services" in title_l or "find local services" in heading_l:
+            score += 18.0
+
+        if "hotline" in title_l or "hotline" in heading_l:
+            score += 18.0
+
+        if "recognizing the signs" in title_l:
+            score -= 15.0
 
     for term in query_terms:
         if term in title_l:
@@ -101,6 +100,8 @@ if hotline_intent:
         "signos de explotacion",
         "human trafficking hotline",
         "national human trafficking hotline",
+        "find local services",
+        "contact us",
     ]
 
     for phrase in exact_phrases:
@@ -111,16 +112,6 @@ if hotline_intent:
                 score += 14.0
             if phrase in content_l:
                 score += 5.0
-
-    if any(x in query_l for x in ["hotline", "contact", "phone", "number", "call"]):
-        if content_type == "support":
-            score += 10.0
-        if source_site == "humantraffickinghotline":
-            score += 8.0
-        if "contact" in title_l or "contact" in heading_l:
-            score += 10.0
-        if "hotline" in title_l or "hotline" in heading_l or "hotline" in content_l:
-            score += 12.0
 
     if any(x in query_l for x in ["what is", "qué es", "que es"]):
         if content_type == "education":
@@ -153,8 +144,10 @@ if hotline_intent:
     if heading_l and not any(term in heading_l for term in query_terms):
         score -= 1.5
 
-    if content_type == "support" and any(
-        x in query_l for x in ["what is", "qué es", "que es", "sign", "señales", "senales"]
+    if (
+        content_type == "support"
+        and any(x in query_l for x in ["what is", "qué es", "que es", "sign", "señales", "senales"])
+        and not hotline_intent
     ):
         score -= 2.0
 
