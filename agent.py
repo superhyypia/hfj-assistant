@@ -62,7 +62,7 @@ def assess_risk_level(
     if is_help and any(m in text for m in emergency_markers):
         return "high"
 
-    if is_unknown_location and is_help:
+    if is_unknown_location:
         return "high"
 
     if is_help:
