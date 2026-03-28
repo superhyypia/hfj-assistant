@@ -48,7 +48,6 @@ class ChatRequest(BaseModel):
 @app.on_event("startup")
 def startup_event():
     init_db()
-    ingest_all_sources()
 
 
 @app.get("/")
