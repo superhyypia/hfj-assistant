@@ -233,3 +233,35 @@ def build_unknown_location_response(session_id: str, language: str = "en"):
         "title": title,
         "session_id": session_id,
     }
+
+def build_low_visibility_response(session_id: str, language: str = "en"):
+    if language == "es":
+        reply = (
+            "Entendido.\n\n"
+            "Mantén esta conversación breve si crees que alguien puede verla.\n\n"
+            "• Si puedes, ve a un lugar público o cerca de una persona segura\n"
+            "• Si puedes hacerlo sin riesgo, pide ayuda a personal de una tienda, farmacia, hospital o estación\n"
+            "• Si no puedes hablar, intenta compartir tu ubicación con alguien de confianza o usar una nota corta\n"
+            "• Si hay peligro inmediato, pide a alguien cercano que llame a emergencias\n\n"
+            "Si es seguro, dime solo una palabra sobre tu ubicación, por ejemplo un país, ciudad o tienda."
+        )
+        title = "Apoyo discreto"
+    else:
+        reply = (
+            "Understood.\n\n"
+            "Keep this conversation brief if someone may see it.\n\n"
+            "• If you can, move toward a public place or a safe person nearby\n"
+            "• If safe, ask staff in a shop, pharmacy, hospital, or station for help\n"
+            "• If you cannot speak safely, try sharing your location with someone you trust or use a short written note\n"
+            "• If there is immediate danger, ask someone nearby to call emergency services\n\n"
+            "If it is safe, tell me just one word about your location, such as a country, city, or shop name."
+        )
+        title = "Discreet support"
+
+    return {
+        "reply": reply,
+        "source": "https://hopeforjustice.org/get-help/",
+        "type": "hfj",
+        "title": title,
+        "session_id": session_id,
+    }
