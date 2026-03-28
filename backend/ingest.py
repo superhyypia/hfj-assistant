@@ -1,4 +1,6 @@
 import json
+from urllib.parse import urlparse
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -6,88 +8,7 @@ from ai import embed_texts
 from db import get_db_connection
 from utils import normalize_whitespace
 
-CONTENT_SOURCES = [
-    {
-        "url": "https://hopeforjustice.org/human-trafficking/",
-        "source_site": "hopeforjustice",
-        "region": "global",
-        "content_type": "education",
-    },
-    {
-        "url": "https://hopeforjustice.org/spot-the-signs/",
-        "source_site": "hopeforjustice",
-        "region": "global",
-        "content_type": "education",
-    },
-    {
-        "url": "https://hopeforjustice.org/get-help/",
-        "source_site": "hopeforjustice",
-        "region": "global",
-        "content_type": "support",
-    },
-    {
-        "url": "https://hopeforjustice.org/contact/",
-        "source_site": "hopeforjustice",
-        "region": "global",
-        "content_type": "support",
-    },
-    {
-        "url": "https://hopeforjustice.org/resources-and-statistics/",
-        "source_site": "hopeforjustice",
-        "region": "global",
-        "content_type": "resource",
-    },
-    {
-        "url": "https://hopeforjustice.org/resources-and-statistics/spot-the-signs-resources/",
-        "source_site": "hopeforjustice",
-        "region": "global",
-        "content_type": "resource",
-    },
-    {
-        "url": "https://www2.hse.ie/services/human-trafficking/",
-        "source_site": "hse",
-        "region": "ireland",
-        "content_type": "support",
-    },
-    {
-        "url": "https://www2.hse.ie/services/domestic-sexual-gender-based-violence/",
-        "source_site": "hse",
-        "region": "ireland",
-        "content_type": "support",
-    },
-    {
-        "url": "https://www.modernslavery.gov.uk/",
-        "source_site": "modernslavery_uk",
-        "region": "uk",
-        "content_type": "reporting",
-    },
-    {
-        "url": "https://www.modernslavery.gov.uk/prompt-sheet-for-working-offline",
-        "source_site": "modernslavery_uk",
-        "region": "uk",
-        "content_type": "reporting",
-    },
-    {
-        "url": "https://humantraffickinghotline.org/en/contact",
-        "source_site": "humantraffickinghotline",
-        "region": "united_states",
-        "content_type": "support",
-    },
-    {
-        "url": "https://humantraffickinghotline.org/en/find-local-services",
-        "source_site": "humantraffickinghotline",
-        "region": "united_states",
-        "content_type": "support",
-    },
-    {
-        "url": "https://humantraffickinghotline.org/en/human-trafficking/recognizing-signs",
-        "source_site": "humantraffickinghotline",
-        "region": "united_states",
-        "content_type": "education",
-    },
-]
-
-USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.4)"
+USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.5)"
 
 JUNK_PATTERNS = [
     "out of date browser",
@@ -109,6 +30,18 @@ JUNK_PATTERNS = [
 def is_junk(text: str) -> bool:
     t = text.lower()
     return any(pattern in t for pattern in JUNK_PATTERNS)
+
+
+def domain_to_source_site(domain: str) -> str:
+    if not domain:
+        return "unknown"
+
+    cleaned = domain.lower().strip()
+    cleaned = cleaned.replace("https://", "").replace("http://", "")
+    cleaned = cleaned.replace("www.", "")
+    cleaned = cleaned.split("/")[0]
+    cleaned = cleaned.replace(".", "_").replace("-", "_")
+    return cleaned
 
 
 def fetch_page_html(url: str) -> str:
@@ -140,7 +73,7 @@ def chunk_text(text: str, max_chars: int = 1200) -> list[str]:
                 current = p
             else:
                 for i in range(0, len(p), max_chars):
-                    part = p[i:i + max_chars].strip()
+                    part = p[i : i + max_chars].strip()
                     if part:
                         chunks.append(part)
                 current = ""
@@ -151,7 +84,13 @@ def chunk_text(text: str, max_chars: int = 1200) -> list[str]:
     return chunks
 
 
-def parse_page(html: str, url: str, source_site: str, region: str, content_type: str) -> tuple[str, list[dict]]:
+def parse_page(
+    html: str,
+    url: str,
+    source_site: str,
+    region: str,
+    content_type: str,
+) -> tuple[str, list[dict]]:
     soup = BeautifulSoup(html, "lxml")
 
     for tag in soup(["script", "style", "noscript", "iframe", "svg", "form"]):
@@ -181,6 +120,7 @@ def parse_page(html: str, url: str, source_site: str, region: str, content_type:
         nonlocal buffer
         if not buffer:
             return
+
         joined = "\n".join(buffer).strip()
         for chunk in chunk_text(joined):
             sections.append(
@@ -253,39 +193,122 @@ def upsert_sections(sections: list[dict]) -> int:
     return len(rows)
 
 
+def get_active_ingest_sources() -> list[dict]:
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, domain, base_url, region, source_type, priority, status
+                FROM hfj_sources
+                WHERE status = 'active'
+                  AND base_url IS NOT NULL
+                  AND TRIM(base_url) <> ''
+                ORDER BY priority DESC, name ASC
+                """
+            )
+            rows = cur.fetchall()
+
+    sources = []
+    for row in rows:
+        domain = row[2]
+        base_url = row[3]
+        parsed = urlparse(base_url)
+
+        if not parsed.scheme or not parsed.netloc:
+            continue
+
+        sources.append(
+            {
+                "id": row[0],
+                "name": row[1],
+                "domain": domain,
+                "url": base_url,
+                "source_site": domain_to_source_site(domain),
+                "region": row[4] or "global",
+                "content_type": "resource",
+                "source_type": row[5],
+                "priority": row[6],
+                "status": row[7],
+            }
+        )
+
+    return sources
+
+
+def ingest_source(source: dict) -> dict:
+    try:
+        html = fetch_page_html(source["url"])
+        page_title, sections = parse_page(
+            html=html,
+            url=source["url"],
+            source_site=source["source_site"],
+            region=source["region"],
+            content_type=source.get("content_type", "resource"),
+        )
+        count = upsert_sections(sections)
+
+        return {
+            "id": source.get("id"),
+            "name": source.get("name"),
+            "url": source["url"],
+            "source_site": source["source_site"],
+            "region": source["region"],
+            "content_type": source.get("content_type", "resource"),
+            "page_title": page_title,
+            "chunks_ingested": count,
+            "status": "ok",
+        }
+    except Exception as e:
+        return {
+            "id": source.get("id"),
+            "name": source.get("name"),
+            "url": source.get("url"),
+            "source_site": source.get("source_site"),
+            "status": "error",
+            "error": str(e),
+        }
+
+
 def ingest_all_sources():
+    sources = get_active_ingest_sources()
     results = []
 
-    for source in CONTENT_SOURCES:
-        try:
-            html = fetch_page_html(source["url"])
-            page_title, sections = parse_page(
-                html=html,
-                url=source["url"],
-                source_site=source["source_site"],
-                region=source["region"],
-                content_type=source["content_type"],
-            )
-            count = upsert_sections(sections)
-            results.append(
-                {
-                    "url": source["url"],
-                    "source_site": source["source_site"],
-                    "region": source["region"],
-                    "content_type": source["content_type"],
-                    "page_title": page_title,
-                    "chunks_ingested": count,
-                    "status": "ok",
-                }
-            )
-        except Exception as e:
-            results.append(
-                {
-                    "url": source["url"],
-                    "source_site": source["source_site"],
-                    "status": "error",
-                    "error": str(e),
-                }
-            )
+    for source in sources:
+        results.append(ingest_source(source))
 
     return results
+
+
+def ingest_source_by_id(source_id: int):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, domain, base_url, region, source_type, priority, status
+                FROM hfj_sources
+                WHERE id = %s
+                """,
+                (source_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise ValueError(f"Source {source_id} not found")
+
+    if not row[3]:
+        raise ValueError(f"Source {source_id} has no base_url")
+
+    source = {
+        "id": row[0],
+        "name": row[1],
+        "domain": row[2],
+        "url": row[3],
+        "source_site": domain_to_source_site(row[2]),
+        "region": row[4] or "global",
+        "content_type": "resource",
+        "source_type": row[5],
+        "priority": row[6],
+        "status": row[7],
+    }
+
+    return ingest_source(source)
