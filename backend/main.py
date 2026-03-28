@@ -1,3 +1,4 @@
+from db import init_db, check_db_health    
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -29,6 +30,8 @@ from utils import (
 )
 
 app = FastAPI()
+
+init_db()
 
 @app.get("/admin/sources")
 def get_admin_sources():
@@ -72,6 +75,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/admin/health")
+def admin_health():
+    try:
+        db_ok = check_db_health()
+        return {
+            "status": "ok" if db_ok else "error",
+            "database": "connected" if db_ok else "not connected"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 class ChatRequest(BaseModel):
     message: str
