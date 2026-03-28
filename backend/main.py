@@ -30,6 +30,40 @@ from utils import (
 
 app = FastAPI()
 
+@app.get("/admin/sources")
+def get_admin_sources():
+    return {
+        "sources": [
+            {
+                "id": 1,
+                "name": "Hope for Justice",
+                "domain": "hopeforjustice.org",
+                "region": "Global",
+                "source_type": "official",
+                "priority": 100,
+                "status": "active",
+            },
+            {
+                "id": 2,
+                "name": "HSE",
+                "domain": "hse.ie",
+                "region": "Ireland",
+                "source_type": "official",
+                "priority": 95,
+                "status": "active",
+            },
+            {
+                "id": 3,
+                "name": "Modern Slavery Helpline",
+                "domain": "modernslaveryhelpline.org",
+                "region": "UK",
+                "source_type": "secondary",
+                "priority": 85,
+                "status": "active",
+            },
+        ]
+    }
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
