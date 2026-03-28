@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uuid
 
+
 from agent import is_low_visibility_signal, plan_next_actions
 from ai import get_openai_client
 from db import init_db
