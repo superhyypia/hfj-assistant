@@ -67,13 +67,15 @@ def _looks_like_phone_query(q: str) -> bool:
     patterns = [
         r"\bphone number\b",
         r"\bcontact number\b",
+        r"\bwhat number\b",
+        r"\bwhat is the number\b",
         r"\bhotline\b",
         r"\bhelpline\b",
         r"\bconfidential line\b",
+        r"\bnumber to call\b",
+        r"\bcall number\b",
         r"\bwhat is .* number\b",
         r"\bwhat is .* line\b",
-        r"\bcall\b",
-        r"\bcontact\b",
     ]
     return any(re.search(pattern, q) for pattern in patterns)
 
@@ -122,6 +124,9 @@ def _looks_like_support_contact_query(q: str) -> bool:
         r"\bneed help\b",
         r"\bi need help\b",
         r"\bget help\b",
+        r"\bi am being trafficked\b",
+        r"\bi think i am being trafficked\b",
+        r"\bi am in danger\b",
     ]
     return any(re.search(pattern, q) for pattern in support_patterns)
 
@@ -158,6 +163,7 @@ def plan_next_actions(
             "risk_level": risk_level,
         }
 
+    # HELP / SUPPORT: never fall back to general AI
     if is_help or _looks_like_support_contact_query(q):
         if has_location or session.get("saved_location"):
             return {
@@ -171,7 +177,7 @@ def plan_next_actions(
             "risk_level": risk_level,
         }
 
-    # Order matters: phone/signs/tactics BEFORE definition
+    # FACTUAL CONTACT LOOKUP: retrieval first, AI fallback allowed
     if _looks_like_phone_query(q):
         if retrieval_match:
             return {
