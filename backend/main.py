@@ -19,6 +19,7 @@ from support import (
 from utils import (
     SESSION_STATE,
     add_safety_footer,
+    clean_answer_text,
     detect_language,
     detect_location,
     infer_user_region,
