@@ -396,7 +396,7 @@ def chat(req: ChatRequest):
                 "language": language,
                 "agent_plan": plan,
             }
-            
+
         client = get_openai_client()
         if not client:
             raise HTTPException(status_code=500, detail="Missing API key")
