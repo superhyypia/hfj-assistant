@@ -133,6 +133,30 @@ def init_db():
                 """
             )
 
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hfj_conversations (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    user_message TEXT NOT NULL,
+                    assistant_reply TEXT NOT NULL,
+                    response_type TEXT,
+                    title TEXT,
+                    source TEXT,
+                    source_site TEXT,
+                    source_name TEXT,
+                    source_domain TEXT,
+                    agent_action TEXT,
+                    agent_reason TEXT,
+                    score DOUBLE PRECISION,
+                    region_detected TEXT,
+                    language TEXT,
+                    is_fallback BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+
             cur.executemany(
                 """
                 INSERT INTO hfj_support_routes
@@ -273,3 +297,173 @@ def get_sources():
         }
         for r in rows
     ]
+
+
+def log_conversation_turn(
+    session_id: str,
+    user_message: str,
+    assistant_reply: str,
+    response_type: str | None = None,
+    title: str | None = None,
+    source: str | None = None,
+    source_site: str | None = None,
+    source_name: str | None = None,
+    source_domain: str | None = None,
+    agent_action: str | None = None,
+    agent_reason: str | None = None,
+    score: float | None = None,
+    region_detected: str | None = None,
+    language: str | None = None,
+    is_fallback: bool = False,
+):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO hfj_conversations (
+                    session_id,
+                    user_message,
+                    assistant_reply,
+                    response_type,
+                    title,
+                    source,
+                    source_site,
+                    source_name,
+                    source_domain,
+                    agent_action,
+                    agent_reason,
+                    score,
+                    region_detected,
+                    language,
+                    is_fallback
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    session_id,
+                    user_message,
+                    assistant_reply,
+                    response_type,
+                    title,
+                    source,
+                    source_site,
+                    source_name,
+                    source_domain,
+                    agent_action,
+                    agent_reason,
+                    score,
+                    region_detected,
+                    language,
+                    is_fallback,
+                ),
+            )
+        conn.commit()
+
+
+def get_conversations(limit: int = 100):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    session_id,
+                    user_message,
+                    assistant_reply,
+                    response_type,
+                    title,
+                    source,
+                    source_site,
+                    source_name,
+                    source_domain,
+                    agent_action,
+                    agent_reason,
+                    score,
+                    region_detected,
+                    language,
+                    is_fallback,
+                    created_at
+                FROM hfj_conversations
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": r[0],
+            "session_id": r[1],
+            "user_message": r[2],
+            "assistant_reply": r[3],
+            "response_type": r[4],
+            "title": r[5],
+            "source": r[6],
+            "source_site": r[7],
+            "source_name": r[8],
+            "source_domain": r[9],
+            "agent_action": r[10],
+            "agent_reason": r[11],
+            "score": r[12],
+            "region_detected": r[13],
+            "language": r[14],
+            "is_fallback": r[15],
+            "created_at": r[16].isoformat() if r[16] else None,
+        }
+        for r in rows
+    ]
+
+
+def get_conversation_by_id(conversation_id: int):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    session_id,
+                    user_message,
+                    assistant_reply,
+                    response_type,
+                    title,
+                    source,
+                    source_site,
+                    source_name,
+                    source_domain,
+                    agent_action,
+                    agent_reason,
+                    score,
+                    region_detected,
+                    language,
+                    is_fallback,
+                    created_at
+                FROM hfj_conversations
+                WHERE id = %s
+                """,
+                (conversation_id,),
+            )
+            r = cur.fetchone()
+
+    if not r:
+        return None
+
+    return {
+        "id": r[0],
+        "session_id": r[1],
+        "user_message": r[2],
+        "assistant_reply": r[3],
+        "response_type": r[4],
+        "title": r[5],
+        "source": r[6],
+        "source_site": r[7],
+        "source_name": r[8],
+        "source_domain": r[9],
+        "agent_action": r[10],
+        "agent_reason": r[11],
+        "score": r[12],
+        "region_detected": r[13],
+        "language": r[14],
+        "is_fallback": r[15],
+        "created_at": r[16].isoformat() if r[16] else None,
+    }
