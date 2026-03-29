@@ -387,6 +387,8 @@ def chat(req: ChatRequest):
                 "title": retrieval_match["title"],
                 "section_heading": retrieval_match["section_heading"],
                 "source_site": retrieval_match.get("source_site") or "unknown",
+                "source_name": retrieval_match.get("source_name"),
+                "source_domain": retrieval_match.get("source_domain"),
                 "confidence": retrieval_match["confidence"],
                 "score": retrieval_match["score"],
                 "second_score": retrieval_match.get("second_score"),
