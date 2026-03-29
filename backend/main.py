@@ -172,6 +172,16 @@ def create_source(source: SourceCreate):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.post("/admin/sources/{source_id}/ingest")
+def ingest_single_source(source_id: int):
+    from ingest import ingest_source_by_id
+
+    try:
+        result = ingest_source_by_id(source_id)
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/db-check")
 def db_check():
     try:
