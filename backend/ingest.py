@@ -35,7 +35,6 @@ def is_junk(text: str) -> bool:
 def domain_to_source_site(domain: str) -> str:
     if not domain:
         return "unknown"
-
     cleaned = domain.lower().strip()
     cleaned = cleaned.replace("https://", "").replace("http://", "")
     cleaned = cleaned.replace("www.", "")
