@@ -129,17 +129,29 @@ def clean_answer_text(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
 
-
 def detect_language(text: str) -> str:
+    t = (text or "").strip().lower()
+
     spanish_markers = [
-        "hola", "ayuda", "trata", "tráfico", "trafico", "explotación", "explotacion",
-        "señales", "senales", "qué", "que es", "necesito", "peligro", "víctima", "victima",
-        "dónde", "donde", "españa", "méxico", "mexico", "argentina", "colombia", "perú",
-        "peru", "chile", "quiero ayuda", "estoy en", "puedo encontrar ayuda",
-        "señales de explotación", "signos de explotación"
+        "hola", "ayuda", "necesito", "por favor", "estoy", "puedo",
+        "trata", "víctima", "peligro", "dónde", "cómo", "quiero",
+        "gracias", "sí", "también", "persona", "personas",
     ]
-    lowered = text.lower()
-    return "es" if any(marker in lowered for marker in spanish_markers) else "en"
+
+    english_markers = [
+        "the", "and", "help", "please", "i", "i'm", "i am", "what",
+        "where", "how", "danger", "need", "think", "might", "call",
+    ]
+
+    spanish_score = sum(1 for marker in spanish_markers if marker in t)
+    english_score = sum(1 for marker in english_markers if marker in t)
+
+    # Only return Spanish when there is strong evidence
+    if spanish_score >= 2 and spanish_score > english_score:
+        return "es"
+
+    return "en"
+
 
 
 def localize_text(key: str, language: str = "en", **kwargs) -> str:
