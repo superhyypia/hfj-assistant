@@ -547,6 +547,28 @@ def chat(req: ChatRequest):
             )
             return result
 
+        # 🚨 SAFETY: block AI from generating phone numbers
+        contact_keywords = ["call", "contact", "number", "hotline", "helpline"]
+        countries = ["ireland", "uk", "canada", "denmark", "mexico", "usa", "united states"]
+
+        if any(k in text for k in contact_keywords) and any(c in text for c in countries):
+            result = {
+                "reply": (
+                    "I couldn’t verify a country-specific trafficking contact number from trusted sources.\n\n"
+                    "If there is immediate danger, call local emergency services.\n"
+                    "If you want, I can help identify official organisations for that country."
+                ),
+                "source": "Trusted sources check",
+                "type": "hfj",
+                "title": "Verified sources not available",
+                "source_site": "system",
+                "source_name": "Trusted Sources Check",
+                "source_domain": None,
+                "session_id": session_id,
+                "language": language,
+                "agent_plan": plan,
+            }
+
         client = get_openai_client()
         if not client:
             raise HTTPException(status_code=500, detail="Missing API key")
