@@ -1,38 +1,36 @@
-def is_low_visibility_signal(text: str) -> bool:
-    text = text.lower().strip()
+import re
 
-    phrases = [
-        "my phone is monitored",
-        "my phone is being monitored",
-        "my phone is watched",
-        "someone is watching my phone",
-        "i can't talk",
-        "i cant talk",
-        "i cannot talk",
-        "i can't speak",
-        "i cant speak",
-        "i cannot speak",
-        "someone is watching me",
-        "i am being watched",
-        "i'm being watched",
-        "i cannot call",
-        "i can't call",
-        "i cant call",
-        "i cannot text",
-        "i can't text",
-        "i cant text",
-        "i need to be discreet",
-        "i need to be discreet",
-        "mi teléfono está vigilado",
-        "mi telefono esta vigilado",
-        "no puedo hablar",
-        "no puedo llamar",
-        "no puedo enviar mensajes",
-        "me están vigilando",
-        "me estan vigilando",
+
+def is_low_visibility_signal(text: str) -> bool:
+    """
+    Detect softer, indirect concern signals where the user may be worried
+    but is not explicitly asking for help yet.
+    """
+    if not text:
+        return False
+
+    t = text.lower().strip()
+
+    patterns = [
+        "i'm worried",
+        "im worried",
+        "i am worried",
+        "concerned about",
+        "something feels wrong",
+        "this feels wrong",
+        "not sure if",
+        "might be trafficked",
+        "may be trafficked",
+        "someone might be in danger",
+        "someone may be in danger",
+        "i think something is wrong",
+        "i'm not sure",
+        "im not sure",
+        "warning signs",
+        "signs of trafficking",
     ]
 
-    return any(p in text for p in phrases)
+    return any(pattern in t for pattern in patterns)
 
 
 def assess_risk_level(
@@ -41,60 +39,64 @@ def assess_risk_level(
     is_low_visibility: bool,
     text: str,
 ) -> str:
-    text = text.lower().strip()
+    """
+    Very lightweight risk classification used for planning only.
+    """
+    t = (text or "").lower()
 
-    emergency_markers = [
+    urgent_terms = [
         "immediate danger",
-        "in danger",
-        "unsafe",
+        "in danger now",
+        "right now",
+        "urgent",
+        "emergency",
+        "help now",
+        "call police",
+        "being hurt",
+        "locked up",
         "trapped",
-        "cannot leave",
-        "can't leave",
-        "being trafficked",
-        "llama al 911",
-        "peligro inmediato",
-        "no puedo salir",
+        "unsafe",
     ]
 
-    if is_low_visibility:
+    if any(term in t for term in urgent_terms):
         return "high"
 
-    if is_help and any(m in text for m in emergency_markers):
-        return "high"
-
-    if is_unknown_location:
-        return "high"
-
-    if is_help:
+    if is_help or is_unknown_location:
         return "medium"
 
-    return "low"
+    if is_low_visibility:
+        return "low"
+
+    return "info"
 
 
-def infer_intent(
-    text: str,
-    is_help: bool,
-    has_location: bool,
-    retrieval_match: dict | None,
-) -> str:
-    text = text.lower().strip()
+def _looks_like_definition_query(q: str) -> bool:
+    return (
+        q.startswith("what is ")
+        or q.startswith("define ")
+        or q.startswith("what are ")
+        or q.startswith("explain ")
+    )
 
-    if is_help:
-        return "support"
 
-    if any(x in text for x in ["report", "report trafficking", "report modern slavery"]):
-        return "reporting"
-
-    if any(x in text for x in ["hotline", "contact", "phone", "number", "call"]):
-        return "hotline_lookup"
-
-    if has_location and any(x in text for x in ["help", "support", "find help", "where can i find help"]):
-        return "location_support"
-
-    if retrieval_match:
-        return "education"
-
-    return "general"
+def _looks_like_support_contact_query(q: str) -> bool:
+    support_patterns = [
+        r"\bwho do i call\b",
+        r"\bwho can i call\b",
+        r"\bwho should i call\b",
+        r"\bwho do i contact\b",
+        r"\bwho can i contact\b",
+        r"\bwho should i contact\b",
+        r"\bhow do i report\b",
+        r"\breport trafficking\b",
+        r"\bneed help\b",
+        r"\bi need help\b",
+        r"\bget help\b",
+        r"\bhotline\b",
+        r"\bhelpline\b",
+        r"\bcontact number\b",
+    ]
+    return any(re.search(pattern, q) for pattern in support_patterns)
 
 
 def plan_next_actions(
@@ -106,6 +108,25 @@ def plan_next_actions(
     is_low_visibility: bool,
     retrieval_match: dict | None,
 ):
+    q = (text or "").lower().strip()
+
+    # ---------------------------
+    # 1. Strong definition / knowledge intent
+    # ---------------------------
+    if _looks_like_definition_query(q):
+        if retrieval_match:
+            return {
+                "actions": ["answer_from_retrieval"],
+                "reason": "definition query",
+            }
+        return {
+            "actions": ["answer_with_llm"],
+            "reason": "definition query without retrieval match",
+        }
+
+    # ---------------------------
+    # 2. Assess risk
+    # ---------------------------
     risk_level = assess_risk_level(
         is_help=is_help,
         is_unknown_location=is_unknown_location,
@@ -113,72 +134,68 @@ def plan_next_actions(
         text=text,
     )
 
-    intent = infer_intent(
-        text=text,
-        is_help=is_help,
-        has_location=has_location,
-        retrieval_match=retrieval_match,
-    )
+    # ---------------------------
+    # 3. Unknown-location support
+    # ---------------------------
+    if is_unknown_location:
+        return {
+            "actions": ["unknown_location_support"],
+            "reason": "user does not know their location",
+            "risk_level": risk_level,
+        }
 
-    plan = {
-        "risk_level": risk_level,
-        "intent": intent,
-        "actions": [],
-        "response_mode": "standard",
-    }
+    # ---------------------------
+    # 4. Low-visibility / indirect concern
+    # ---------------------------
+    if is_low_visibility and not is_help:
+        return {
+            "actions": ["low_visibility_support"],
+            "reason": "indirect concern signal",
+            "risk_level": risk_level,
+        }
 
-    if session.get("stage") == "awaiting_location":
-        plan["intent"] = "support"
+    # ---------------------------
+    # 5. Direct support / reporting / contact routing
+    # ---------------------------
+    if is_help or _looks_like_support_contact_query(q):
+        if has_location or session.get("saved_location"):
+            return {
+                "actions": ["route_support"],
+                "reason": "support request with location",
+                "risk_level": risk_level,
+            }
 
-        if is_low_visibility:
-            plan["actions"] = ["low_visibility_support"]
-            plan["response_mode"] = "discreet"
-            return plan
+        return {
+            "actions": ["ask_location"],
+            "reason": "support request without location",
+            "risk_level": risk_level,
+        }
 
-        if is_unknown_location:
-            plan["actions"] = ["unknown_location_support"]
-            plan["response_mode"] = "safety_first"
-            return plan
+    # ---------------------------
+    # 6. Strong retrieval for knowledge queries
+    # ---------------------------
+    if retrieval_match and retrieval_match.get("score", 0) >= 0.68:
+        return {
+            "actions": ["answer_from_retrieval"],
+            "reason": "strong retrieval match",
+            "risk_level": risk_level,
+        }
 
-        if has_location:
-            plan["actions"] = ["route_support"]
-            plan["response_mode"] = "official_first"
-            return plan
-
-        plan["actions"] = ["ask_location_again"]
-        plan["response_mode"] = "safety_first"
-        return plan
-
-    if is_low_visibility:
-        plan["actions"] = ["low_visibility_support"]
-        plan["response_mode"] = "discreet"
-        return plan
-
-    if is_help:
-        plan["intent"] = "support"
-
-        if has_location:
-            plan["actions"] = ["route_support"]
-            plan["response_mode"] = "official_first"
-        else:
-            plan["actions"] = ["ask_location"]
-            plan["response_mode"] = "safety_first"
-
-        return plan
-
+    # ---------------------------
+    # 7. Weak retrieval can still be polished if available
+    # ---------------------------
     if retrieval_match:
-        confidence = retrieval_match.get("confidence", "low")
+        return {
+            "actions": ["answer_with_polish"],
+            "reason": "weak retrieval match",
+            "risk_level": risk_level,
+        }
 
-        if confidence == "high":
-            plan["actions"] = ["answer_from_retrieval"]
-            plan["response_mode"] = "grounded"
-            return plan
-
-        if confidence == "medium":
-            plan["actions"] = ["answer_with_polish"]
-            plan["response_mode"] = "grounded"
-            return plan
-
-    plan["actions"] = ["fallback_general"]
-    plan["response_mode"] = "fallback"
-    return plan
+    # ---------------------------
+    # 8. Final fallback
+    # ---------------------------
+    return {
+        "actions": ["answer_with_llm"],
+        "reason": "fallback",
+        "risk_level": risk_level,
+    }
