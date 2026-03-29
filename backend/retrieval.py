@@ -6,9 +6,6 @@ from ai import embed_texts
 from db import get_db_connection
 
 
-# ---------------------------
-# Similarity
-# ---------------------------
 def cosine_similarity(a, b):
     if not a or not b or len(a) != len(b):
         return -1.0
@@ -23,23 +20,21 @@ def cosine_similarity(a, b):
     return dot / (norm_a * norm_b)
 
 
-# ---------------------------
-# Intent detection
-# ---------------------------
 def detect_intent(query: str) -> str:
     q = query.lower()
 
-    if any(x in q for x in ["what is", "define", "definition", "meaning"]):
-        return "definition"
+    if any(x in q for x in ["phone number", "contact number", "hotline", "helpline", "confidential line", "what is the", "who do i call"]):
+        if any(x in q for x in ["number", "line", "phone", "call", "contact"]):
+            return "phone"
 
-    if any(x in q for x in ["call", "number", "phone", "contact", "helpline"]):
-        return "phone"
-
-    if any(x in q for x in ["sign", "spot", "indicator"]):
+    if any(x in q for x in ["signs of", "what are the signs", "spot the signs", "indicators", "warning signs"]):
         return "signs"
 
-    if any(x in q for x in ["recruit", "tactic", "method"]):
+    if any(x in q for x in ["recruit", "recruitment", "tactics", "methods", "how do traffickers recruit"]):
         return "tactics"
+
+    if any(x in q for x in ["what is", "define", "definition", "meaning", "explain"]):
+        return "definition"
 
     if any(x in q for x in ["how do", "what should", "report", "help"]):
         return "steps"
@@ -47,44 +42,30 @@ def detect_intent(query: str) -> str:
     return "general"
 
 
-# ---------------------------
-# Clean text
-# ---------------------------
-def clean_text(text: str, max_len=260):
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:max_len]
+def clean_text(text: str, max_len: int = 320) -> str:
+    return re.sub(r"\s+", " ", text).strip()[:max_len]
 
 
-# ---------------------------
-# Format answer (SAFE)
-# ---------------------------
-def format_answer(answer: str, intent: str):
-    """
-    IMPORTANT:
-    - Formatting must NEVER override intent
-    - Especially: definition must NEVER become phone
-    """
+def extract_phone(text: str) -> Optional[str]:
+    match = re.search(r"\b\d{3,4}[\s-]?\d{3}[\s-]?\d{3}\b", text)
+    return match.group(0) if match else None
 
+
+def format_answer(answer: str, intent: str, query: str) -> str:
     text = clean_text(answer)
 
-    # ✅ Definition ALWAYS wins
-    if intent == "definition":
-        return text
-
-    # Phone formatting ONLY for phone intent
     if intent == "phone":
-        match = re.search(r"\+?\d[\d\s\-]{6,}", text)
-        if match:
-            return f"The contact number is {match.group(0)}."
+        phone = extract_phone(answer)
+        if phone:
+            if "garda" in query.lower():
+                return f"The Garda Confidential Line is {phone}."
+            return f"The contact number is {phone}."
+        return text
 
     return text
 
 
-# ---------------------------
-# Main retrieval
-# ---------------------------
 def find_match(query: str, user_region: str | None = None, language: str = "en"):
-
     intent = detect_intent(query)
     query_embedding = embed_texts([query])[0]
 
@@ -108,91 +89,94 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
             rows = cur.fetchall()
 
     best = None
-    best_score = -1
+    best_score = -1.0
 
     for row in rows:
         content = row[0] or ""
         embedding_json = row[1]
+        source_url = row[2]
+        page_title = row[3] or ""
+        section_heading = row[4] or ""
+        source_site = row[5] or ""
+        region = row[6]
+        source_name = row[7]
+        source_domain = row[8]
 
         if not embedding_json:
             continue
 
         try:
             embedding = json.loads(embedding_json)
-        except:
+        except Exception:
             continue
 
         score = cosine_similarity(query_embedding, embedding)
 
         content_l = content.lower()
-        heading_l = (row[4] or "").lower()
-        title_l = (row[3] or "").lower()
+        heading_l = section_heading.lower()
+        title_l = page_title.lower()
+        query_l = query.lower()
 
-        # ---------------------------
-        # Keyword boost
-        # ---------------------------
-        for word in re.findall(r"\w+", query.lower()):
+        for word in re.findall(r"\w+", query_l):
             if len(word) > 3:
                 if word in heading_l:
-                    score += 0.2
+                    score += 0.20
                 elif word in title_l:
-                    score += 0.1
+                    score += 0.10
                 elif word in content_l:
                     score += 0.05
 
-        # ---------------------------
-        # Intent-aware scoring
-        # ---------------------------
+        if intent == "phone":
+            if extract_phone(content):
+                score += 1.2
+            if "call" in content_l or "contact" in content_l or "line" in content_l:
+                score += 0.5
+            if "garda" in query_l and "garda" in content_l:
+                score += 1.5
+            if "confidential" in query_l and "confidential" in content_l:
+                score += 0.8
 
         if intent == "definition":
-            if "what is" in heading_l:
-                score += 1.2
-            if "definition" in heading_l:
-                score += 1.2
-
-            # 🚫 penalise phone-heavy chunks
-            if re.search(r"\d{3,}", content):
-                score -= 0.6
-
-        if intent == "phone":
-            if re.search(r"\d{3,}", content):
-                score += 0.8
-
-        if intent == "steps":
-            if "report" in heading_l or "contact" in heading_l:
-                score += 0.8
-
-        if intent == "tactics":
-            if "recruit" in heading_l:
+            if "what is" in heading_l or "definition" in heading_l:
                 score += 1.0
+            if extract_phone(content):
+                score -= 0.8
 
         if intent == "signs":
-            if "sign" in heading_l:
+            if "sign" in heading_l or "indicator" in heading_l:
                 score += 1.0
+            if "sign" in title_l:
+                score += 0.4
 
-        # ---------------------------
-        # Region boost
-        # ---------------------------
-        if user_region and row[6] == user_region:
+        if intent == "tactics":
+            if "recruit" in heading_l or "tactic" in heading_l or "method" in heading_l:
+                score += 1.0
+            if "recruit" in content_l:
+                score += 0.4
+
+        if intent == "steps":
+            if "report" in heading_l or "contact" in heading_l or "help" in heading_l:
+                score += 0.8
+
+        if user_region and region == user_region:
             score += 0.3
 
         if score > best_score:
             best_score = score
             best = {
                 "answer": content,
-                "source": row[2],
-                "title": row[3],
-                "section_heading": row[4],
-                "source_site": row[5],
-                "source_name": row[7],
-                "source_domain": row[8],
+                "source": source_url,
+                "title": page_title,
+                "section_heading": section_heading,
+                "source_site": source_site,
+                "source_name": source_name,
+                "source_domain": source_domain,
                 "confidence": round(score, 3),
                 "score": round(score, 3),
             }
 
-    if not best or best_score < 0.7:
+    if not best or best_score < 0.70:
         return None
 
-    best["answer"] = format_answer(best["answer"], intent)
-
+    best["answer"] = format_answer(best["answer"], intent, query)
     return best
