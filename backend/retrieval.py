@@ -23,9 +23,8 @@ def cosine_similarity(a, b):
 def detect_intent(query: str) -> str:
     q = query.lower()
 
-    if any(x in q for x in ["phone number", "contact number", "hotline", "helpline", "confidential line", "what is the", "who do i call"]):
-        if any(x in q for x in ["number", "line", "phone", "call", "contact"]):
-            return "phone"
+    if any(x in q for x in ["phone number", "contact number", "what number", "what is the number", "hotline", "helpline", "confidential line", "number to call", "call number"]):
+        return "phone"
 
     if any(x in q for x in ["signs of", "what are the signs", "spot the signs", "indicators", "warning signs"]):
         return "signs"
@@ -90,6 +89,7 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
 
     best = None
     best_score = -1.0
+    query_l = query.lower()
 
     for row in rows:
         content = row[0] or ""
@@ -115,7 +115,6 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         content_l = content.lower()
         heading_l = section_heading.lower()
         title_l = page_title.lower()
-        query_l = query.lower()
 
         for word in re.findall(r"\w+", query_l):
             if len(word) > 3:
@@ -129,12 +128,41 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         if intent == "phone":
             if extract_phone(content):
                 score += 1.2
-            if "call" in content_l or "contact" in content_l or "line" in content_l:
+            if "call" in content_l or "contact" in content_l or "line" in content_l or "number" in content_l:
                 score += 0.5
             if "garda" in query_l and "garda" in content_l:
-                score += 1.5
+                score += 1.8
             if "confidential" in query_l and "confidential" in content_l:
                 score += 0.8
+
+            # Strong country-specific preference
+            if user_region == "canada":
+                if region == "canada":
+                    score += 2.0
+                if source_site == "rcmp_ca":
+                    score += 2.0
+                if "canada" in title_l or "canada" in heading_l or "canada" in content_l:
+                    score += 1.0
+
+            if user_region == "ireland":
+                if region == "ireland":
+                    score += 2.0
+                if source_site == "citizensinformation_ie":
+                    score += 1.5
+                if "ireland" in title_l or "ireland" in heading_l or "ireland" in content_l:
+                    score += 1.0
+
+            if user_region == "uk":
+                if region == "uk":
+                    score += 2.0
+                if source_site in {"modernslavery_uk", "modernslaveryhelpline_org"}:
+                    score += 1.5
+
+            if user_region == "united_states":
+                if region == "united_states":
+                    score += 2.0
+                if source_site == "humantraffickinghotline":
+                    score += 1.5
 
         if intent == "definition":
             if "what is" in heading_l or "definition" in heading_l:
@@ -159,7 +187,7 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
                 score += 0.8
 
         if user_region and region == user_region:
-            score += 0.3
+            score += 0.5
 
         if score > best_score:
             best_score = score
