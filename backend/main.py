@@ -5,7 +5,14 @@ import uuid
 
 from agent import is_low_visibility_signal, plan_next_actions
 from ai import get_openai_client
-from db import init_db, check_db_health, get_sources
+from db import (
+    init_db,
+    check_db_health,
+    get_sources,
+    log_conversation_turn,
+    get_conversations,
+    get_conversation_by_id,
+)
 from ingest import ingest_all_sources, ingest_source_by_id
 from retrieval import find_match
 from support import (
@@ -101,6 +108,19 @@ def admin_health():
 @app.get("/admin/sources")
 def get_admin_sources():
     return {"sources": get_sources()}
+
+
+@app.get("/admin/conversations")
+def admin_conversations(limit: int = 100):
+    return {"conversations": get_conversations(limit=limit)}
+
+
+@app.get("/admin/conversations/{conversation_id}")
+def admin_conversation_detail(conversation_id: int):
+    conversation = get_conversation_by_id(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
 
 
 @app.post("/admin/sources")
@@ -320,6 +340,24 @@ def chat(req: ChatRequest):
             result = build_unknown_location_response(session_id, language=language)
             result["language"] = language
             result["agent_plan"] = plan
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action=(plan.get("actions") or [None])[0],
+                agent_reason=plan.get("reason"),
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
             return result
 
         if plan["actions"] == ["low_visibility_support"]:
@@ -327,6 +365,24 @@ def chat(req: ChatRequest):
             result = build_low_visibility_response(session_id, language=language)
             result["language"] = language
             result["agent_plan"] = plan
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action=(plan.get("actions") or [None])[0],
+                agent_reason=plan.get("reason"),
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
             return result
 
         if plan["actions"] == ["route_support"]:
@@ -341,6 +397,24 @@ def chat(req: ChatRequest):
                 result = build_help_prompt(None, session_id, language=language)
                 result["language"] = language
                 result["agent_plan"] = plan
+
+                log_conversation_turn(
+                    session_id=session_id,
+                    user_message=user_input,
+                    assistant_reply=result["reply"],
+                    response_type=result.get("type"),
+                    title=result.get("title"),
+                    source=result.get("source"),
+                    source_site=result.get("source_site"),
+                    source_name=result.get("source_name"),
+                    source_domain=result.get("source_domain"),
+                    agent_action=(plan.get("actions") or [None])[0],
+                    agent_reason=plan.get("reason"),
+                    score=None,
+                    region_detected=user_region,
+                    language=language,
+                    is_fallback=False,
+                )
                 return result
 
             if chosen_location["kind"] == "state":
@@ -351,6 +425,24 @@ def chat(req: ChatRequest):
             result["session_id"] = session_id
             result["language"] = language
             result["agent_plan"] = plan
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action=(plan.get("actions") or [None])[0],
+                agent_reason=plan.get("reason"),
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
             return result
 
         if plan["actions"] == ["ask_location"]:
@@ -358,6 +450,24 @@ def chat(req: ChatRequest):
             result = build_help_prompt(location, session_id, language=language)
             result["language"] = language
             result["agent_plan"] = plan
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action=(plan.get("actions") or [None])[0],
+                agent_reason=plan.get("reason"),
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
             return result
 
         if plan["actions"] == ["ask_location_again"]:
@@ -370,14 +480,35 @@ def chat(req: ChatRequest):
                 "source": "https://hopeforjustice.org/get-help/",
                 "type": "hfj",
                 "title": "Location needed" if language == "en" else "Ubicación necesaria",
+                "source_site": "hopeforjustice",
+                "source_name": "Hope for Justice",
+                "source_domain": "hopeforjustice.org",
                 "session_id": session_id,
                 "language": language,
                 "agent_plan": plan,
             }
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action=(plan.get("actions") or [None])[0],
+                agent_reason=plan.get("reason"),
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
             return result
 
         if plan["actions"] in (["answer_from_retrieval"], ["answer_with_polish"]) and retrieval_match:
-            return {
+            result = {
                 "reply": add_safety_footer(
                     clean_answer_text(retrieval_match["answer"]),
                     language
@@ -396,6 +527,25 @@ def chat(req: ChatRequest):
                 "language": language,
                 "agent_plan": plan,
             }
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action=(plan.get("actions") or [None])[0],
+                agent_reason=plan.get("reason"),
+                score=result.get("score"),
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
+            return result
 
         client = get_openai_client()
         if not client:
@@ -422,7 +572,7 @@ Question: {user_input}
 """
         )
 
-        return {
+        result = {
             "reply": response.output_text,
             "source": "AI-generated general guidance",
             "type": "ai",
@@ -431,6 +581,25 @@ Question: {user_input}
             "language": language,
             "agent_plan": plan,
         }
+
+        log_conversation_turn(
+            session_id=session_id,
+            user_message=user_input,
+            assistant_reply=result["reply"],
+            response_type=result.get("type"),
+            title=result.get("title"),
+            source=result.get("source"),
+            source_site=None,
+            source_name=None,
+            source_domain=None,
+            agent_action=(plan.get("actions") or [None])[0],
+            agent_reason=plan.get("reason"),
+            score=None,
+            region_detected=user_region,
+            language=language,
+            is_fallback=True,
+        )
+        return result
 
     except HTTPException:
         raise
