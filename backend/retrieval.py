@@ -9,53 +9,32 @@ from db import get_db_connection
 def cosine_similarity(a, b):
     if not a or not b or len(a) != len(b):
         return -1.0
-
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(y * y for y in b) ** 0.5
-
     if norm_a == 0 or norm_b == 0:
         return -1.0
-
     return dot / (norm_a * norm_b)
 
 
 def detect_intent(query: str) -> str:
     q = query.lower()
 
-    if any(
-        x in q
-        for x in [
-            "phone number",
-            "contact number",
-            "what number",
-            "what is the number",
-            "hotline",
-            "helpline",
-            "confidential line",
-            "number to call",
-            "call number",
-        ]
-    ):
+    if any(x in q for x in [
+        "phone", "number", "hotline", "helpline", "call", "contact"
+    ]):
         return "phone"
 
-    if any(x in q for x in ["signs of", "what are the signs", "spot the signs", "indicators", "warning signs"]):
+    if "sign" in q:
         return "signs"
 
-    if any(x in q for x in ["recruit", "recruitment", "tactics", "methods", "how do traffickers recruit"]):
+    if "recruit" in q or "tactic" in q:
         return "tactics"
 
-    if any(x in q for x in ["what is", "define", "definition", "meaning", "explain"]):
+    if any(x in q for x in ["what is", "define", "meaning"]):
         return "definition"
 
-    if any(x in q for x in ["how do", "what should", "report", "help"]):
-        return "steps"
-
     return "general"
-
-
-def clean_text(text: str, max_len: int = 320) -> str:
-    return re.sub(r"\s+", " ", text).strip()[:max_len]
 
 
 def extract_phone(text: str) -> Optional[str]:
@@ -66,43 +45,35 @@ def extract_phone(text: str) -> Optional[str]:
 def _country_aliases():
     return {
         "ireland": ["ireland", "irish"],
-        "uk": ["uk", "united kingdom", "britain", "england", "scotland", "wales", "northern ireland"],
-        "united_states": ["united states", "usa", "us", "america", "american"],
-        "canada": ["canada", "canadian"],
+        "uk": ["uk", "united kingdom", "britain"],
+        "united_states": ["usa", "united states", "america"],
+        "canada": ["canada"],
         "denmark": ["denmark", "danish"],
-        "mexico": ["mexico", "mexican"],
+        "mexico": ["mexico"],
     }
 
 
-def _query_mentions_country(query_l: str, country: str) -> bool:
-    aliases = _country_aliases()
-    return any(term in query_l for term in aliases.get(country, [country]))
-
-
 def _extract_requested_country(query_l: str) -> str | None:
-    for candidate in ["ireland", "uk", "united_states", "canada", "denmark", "mexico"]:
-        if _query_mentions_country(query_l, candidate):
-            return candidate
+    aliases = _country_aliases()
+    for country, terms in aliases.items():
+        if any(term in query_l for term in terms):
+            return country
     return None
 
 
-def _content_mentions_country(text_l: str, country: str) -> bool:
+def _mentions_country(text: str, country: str) -> bool:
     aliases = _country_aliases()
-    return any(term in text_l for term in aliases.get(country, [country]))
+    return any(term in text for term in aliases.get(country, []))
 
 
 def format_answer(answer: str, intent: str, query: str) -> str:
-    text = clean_text(answer)
-
     if intent == "phone":
         phone = extract_phone(answer)
         if phone:
             if "garda" in query.lower():
                 return f"The Garda Confidential Line is {phone}."
             return f"The contact number is {phone}."
-        return text
-
-    return text
+    return answer.strip()
 
 
 def find_match(query: str, user_region: str | None = None, language: str = "en"):
@@ -114,21 +85,11 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    content,
-                    embedding_json,
-                    source_url,
-                    page_title,
-                    section_heading,
-                    source_site,
-                    region,
-                    source_name,
-                    source_domain
+            cur.execute("""
+                SELECT content, embedding_json, source_url, page_title,
+                       section_heading, source_site, region, source_name, source_domain
                 FROM hfj_content_chunks
-                """
-            )
+            """)
             rows = cur.fetchall()
 
     best = None
@@ -153,95 +114,28 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         except Exception:
             continue
 
-        score = cosine_similarity(query_embedding, embedding)
-
         content_l = content.lower()
-        heading_l = section_heading.lower()
         title_l = page_title.lower()
+        heading_l = section_heading.lower()
 
-        # Hard safety rule for country-specific phone/hotline queries:
-        # if a specific country is requested, do not allow a number from another country
+        # 🚨 HARD SAFETY FILTER
         if intent == "phone" and requested_country:
-            mentions_requested_country = (
-                _content_mentions_country(title_l, requested_country)
-                or _content_mentions_country(heading_l, requested_country)
-                or _content_mentions_country(content_l, requested_country)
+            mentions = (
+                _mentions_country(content_l, requested_country)
+                or _mentions_country(title_l, requested_country)
+                or _mentions_country(heading_l, requested_country)
             )
 
-            if region != requested_country and not mentions_requested_country:
-                continue
+            if region != requested_country and not mentions:
+                continue  # ← THIS IS THE KEY FIX
 
-        for word in re.findall(r"\w+", query_l):
-            if len(word) > 3:
-                if word in heading_l:
-                    score += 0.20
-                elif word in title_l:
-                    score += 0.10
-                elif word in content_l:
-                    score += 0.05
+        score = cosine_similarity(query_embedding, embedding)
 
         if intent == "phone":
             if extract_phone(content):
-                score += 1.2
-            if "call" in content_l or "contact" in content_l or "line" in content_l or "number" in content_l:
-                score += 0.5
-            if "garda" in query_l and "garda" in content_l:
-                score += 1.8
-            if "confidential" in query_l and "confidential" in content_l:
-                score += 0.8
-
-            if user_region == "canada":
-                if region == "canada":
-                    score += 2.0
-                if source_site == "rcmp_ca":
-                    score += 2.0
-                if "canada" in title_l or "canada" in heading_l or "canada" in content_l:
-                    score += 1.0
-
-            if user_region == "ireland":
-                if region == "ireland":
-                    score += 2.0
-                if source_site == "citizensinformation_ie":
-                    score += 1.5
-                if "ireland" in title_l or "ireland" in heading_l or "ireland" in content_l:
-                    score += 1.0
-
-            if user_region == "uk":
-                if region == "uk":
-                    score += 2.0
-                if source_site in {"modernslavery_uk", "modernslaveryhelpline_org"}:
-                    score += 1.5
-
-            if user_region == "united_states":
-                if region == "united_states":
-                    score += 2.0
-                if source_site == "humantraffickinghotline":
-                    score += 1.5
-
-        if intent == "definition":
-            if "what is" in heading_l or "definition" in heading_l:
-                score += 1.0
-            if extract_phone(content):
-                score -= 0.8
-
-        if intent == "signs":
-            if "sign" in heading_l or "indicator" in heading_l:
-                score += 1.0
-            if "sign" in title_l:
-                score += 0.4
-
-        if intent == "tactics":
-            if "recruit" in heading_l or "tactic" in heading_l or "method" in heading_l:
-                score += 1.0
-            if "recruit" in content_l:
-                score += 0.4
-
-        if intent == "steps":
-            if "report" in heading_l or "contact" in heading_l or "help" in heading_l:
-                score += 0.8
-
-        if user_region and region == user_region:
-            score += 0.5
+                score += 1.5
+            if region == requested_country:
+                score += 2.0
 
         if score > best_score:
             best_score = score
@@ -254,26 +148,11 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
                 "source_name": source_name,
                 "source_domain": source_domain,
                 "region": region,
-                "confidence": round(score, 3),
                 "score": round(score, 3),
             }
 
-    if not best or best_score < 0.70:
+    if not best:
         return None
-
-    # Final safety gate for phone queries
-    if intent == "phone" and requested_country:
-        best_region = best.get("region")
-        best_text = " ".join(
-            [
-                (best.get("title") or "").lower(),
-                (best.get("section_heading") or "").lower(),
-                (best.get("answer") or "").lower(),
-            ]
-        )
-
-        if best_region != requested_country and not _content_mentions_country(best_text, requested_country):
-            return None
 
     best["answer"] = format_answer(best["answer"], intent, query)
     return best
