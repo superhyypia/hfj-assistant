@@ -1,6 +1,4 @@
-from ai import get_ai_country_support
 from db import get_db_connection
-from utils import normalize_country_key, slugify_state
 
 
 def get_support_route(region_key: str):
@@ -28,176 +26,66 @@ def get_support_route(region_key: str):
     }
 
 
-def build_us_state_response(state_name: str, language: str = "en"):
-    state_slug = slugify_state(state_name)
-    state_page = f"https://humantraffickinghotline.org/en/statistics/{state_slug}"
-
-    if language == "es":
-        reply = (
-            f"Si estás en {state_name}:\n\n"
-            "• Si hay peligro inmediato, llama ahora al 911\n"
-            "• Línea Nacional contra la Trata de Personas: 1-888-373-7888\n"
-            "• Texto: 233733\n"
-            "• También hay chat en vivo y notificación en línea\n\n"
-            f"La Línea Nacional contra la Trata de Personas también tiene una página dedicada a {state_name}."
-        )
-        title = f"Apoyo en {state_name}"
-    else:
-        reply = (
-            f"If you are in {state_name}:\n\n"
-            "• If there is immediate danger, call 911 now\n"
-            "• National Human Trafficking Hotline: 1-888-373-7888\n"
-            "• Text: 233733\n"
-            "• Live chat and online reporting are also available\n\n"
-            f"The National Human Trafficking Hotline also has a dedicated {state_name} page."
-        )
-        title = f"Support in {state_name}"
-
-    return {
-        "reply": reply,
-        "source": state_page,
-        "extra_sources": [
-            "https://humantraffickinghotline.org/en/contact",
-            "https://humantraffickinghotline.org/en/find-local-services",
-        ],
-        "type": "hfj",
-        "title": title,
+def _source_meta_for_region(region_key: str) -> dict:
+    mapping = {
+        "ireland": {
+            "source_name": "HSE Ireland",
+            "source_domain": "hse.ie",
+            "source_site": "hse",
+        },
+        "uk": {
+            "source_name": "UK Modern Slavery Helpline",
+            "source_domain": "modernslavery.gov.uk",
+            "source_site": "modernslavery_uk",
+        },
+        "united_states": {
+            "source_name": "US National Human Trafficking Hotline",
+            "source_domain": "humantraffickinghotline.org",
+            "source_site": "humantraffickinghotline",
+        },
+        "canada": {
+            "source_name": "Canadian Human Trafficking Hotline",
+            "source_domain": "canadianhumantraffickinghotline.ca",
+            "source_site": "canadianhumantraffickinghotline",
+        },
+        "belgium": {
+            "source_name": "Hope for Justice",
+            "source_domain": "hopeforjustice.org",
+            "source_site": "hopeforjustice",
+        },
     }
-
-
-def build_country_response(country_name: str, language: str = "en"):
-    country_key = normalize_country_key(country_name)
-    route = get_support_route(country_key)
-    display_name = country_name.strip()
-
-    if route:
-        if language == "es":
-            reply_lines = [
-                f"Si estás en {route['display_name']}:",
-                "",
-                f"• {route['emergency_text']}",
-            ]
-            if route["phone"]:
-                reply_lines.append(f"• Contacto de apoyo: {route['phone']}")
-            if route["website"]:
-                reply_lines.append(f"• Sitio web: {route['website']}")
-            title = f"Apoyo en {route['display_name']}"
-        else:
-            reply_lines = [
-                f"If you are in {route['display_name']}:",
-                "",
-                f"• {route['emergency_text']}",
-            ]
-            if route["phone"]:
-                reply_lines.append(f"• Support contact: {route['phone']}")
-            if route["website"]:
-                reply_lines.append(f"• Website: {route['website']}")
-            title = f"Support in {route['display_name']}"
-
-        result = {
-            "reply": "\n".join(reply_lines),
-            "source": route["website"] or "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": title,
-        }
-
-        is_thin_route = (
-            not route.get("phone") and
-            (
-                not route.get("website")
-                or route.get("website") == "https://hopeforjustice.org/get-help/"
-            )
-        )
-
-        if is_thin_route:
-            ai_contacts = get_ai_country_support(route["display_name"], language=language)
-            if ai_contacts:
-                result["additional_contacts_title"] = ai_contacts.get("title")
-                result["additional_contacts_status"] = ai_contacts.get("status", "verify")
-                result["additional_contacts"] = ai_contacts.get("contacts", [])
-                result["additional_contacts_raw_text"] = ai_contacts.get("raw_text", "")
-
-        return result
-
-    if language == "es":
-        reply = (
-            f"Si estás en {display_name}:\n\n"
-            "• Si hay peligro inmediato, contacta de inmediato con los servicios de emergencia locales\n"
-            "• Busca ayuda de las autoridades locales oficiales o de organizaciones de apoyo de confianza\n\n"
-            "He incluido la información de ayuda de Hope for Justice mientras buscas el apoyo oficial local adecuado."
-        )
-        title = f"Apoyo en {display_name}"
-    else:
-        reply = (
-            f"If you are in {display_name}:\n\n"
-            "• If there is immediate danger, contact local emergency services right away\n"
-            "• Seek help from official local authorities or trusted local support organisations\n\n"
-            "I’ve included Hope for Justice help information below while you seek the appropriate local official support."
-        )
-        title = f"Support in {display_name}"
-
-    result = {
-        "reply": reply,
-        "source": "https://hopeforjustice.org/get-help/",
-        "type": "hfj",
-        "title": title,
-    }
-
-    ai_contacts = get_ai_country_support(display_name, language=language)
-    if ai_contacts:
-        result["additional_contacts_title"] = ai_contacts.get("title")
-        result["additional_contacts_status"] = ai_contacts.get("status", "verify")
-        result["additional_contacts"] = ai_contacts.get("contacts", [])
-        result["additional_contacts_raw_text"] = ai_contacts.get("raw_text", "")
-
-    return result
+    return mapping.get(
+        region_key,
+        {
+            "source_name": "Hope for Justice",
+            "source_domain": "hopeforjustice.org",
+            "source_site": "hopeforjustice",
+        },
+    )
 
 
 def build_help_prompt(location: dict | None, session_id: str, language: str = "en"):
-    if location and location.get("confidence") == "high":
-        if language == "es":
-            reply = (
-                "Siento mucho que esto pueda estar ocurriendo.\n\n"
-                "Si hay peligro inmediato, contacta ahora con los servicios de emergencia.\n\n"
-                f"Entiendo que puedes estar en {location['value']}. Si es así, puedo orientarte hacia opciones de apoyo para ese lugar."
-            )
-            title = "Apoyo inmediato"
-        else:
-            reply = (
-                "I’m really sorry this may be happening.\n\n"
-                "If there is immediate danger, contact emergency services now.\n\n"
-                f"I understand you may be in {location['value']}. If that is right, I can guide you to support options for that location."
-            )
-            title = "Immediate support"
-
-        return {
-            "reply": reply,
-            "source": "https://hopeforjustice.org/get-help/",
-            "type": "hfj",
-            "title": title,
-            "session_id": session_id,
-        }
-
     if language == "es":
         reply = (
-            "Siento mucho que esto pueda estar ocurriendo.\n\n"
-            "Si hay peligro inmediato, contacta ahora con los servicios de emergencia.\n\n"
-            "Por favor, dime tu país o estado y te daré las opciones de apoyo adecuadas."
+            "Puedo ayudarte a encontrar la opción de apoyo adecuada. "
+            "Dime tu país o estado para que pueda orientarte mejor."
         )
-        title = "Apoyo inmediato"
+        title = "Ubicación necesaria"
     else:
         reply = (
-            "I’m really sorry this may be happening.\n\n"
-            "If there is immediate danger, contact emergency services now.\n\n"
-            "Please tell me your country or state and I’ll give you the right support options."
+            "I can help find the right support option. "
+            "Please tell me your country or state so I can guide you properly."
         )
-        title = "Immediate support"
+        title = "Location needed"
 
     return {
         "reply": reply,
         "source": "https://hopeforjustice.org/get-help/",
         "type": "hfj",
         "title": title,
+        "source_site": "hopeforjustice",
+        "source_name": "Hope for Justice",
+        "source_domain": "hopeforjustice.org",
         "session_id": session_id,
     }
 
@@ -205,63 +93,150 @@ def build_help_prompt(location: dict | None, session_id: str, language: str = "e
 def build_unknown_location_response(session_id: str, language: str = "en"):
     if language == "es":
         reply = (
-            "Siento mucho que esto pueda estar ocurriendo.\n\n"
-            "Si no sabes dónde estás, intenta priorizar tu seguridad inmediata.\n\n"
-            "• Si puedes, busca a una persona segura cerca de ti, como personal de una tienda, farmacia, hospital, estación o recepción\n"
-            "• Si estás en peligro inmediato, llama o pide a alguien que llame a los servicios de emergencia\n"
-            "• Si puedes usar tu teléfono con seguridad, intenta compartir tu ubicación con alguien de confianza\n"
-            "• Si no puedes hablar con seguridad, intenta moverte hacia un lugar público o concurrido\n\n"
-            "Si puedes, dime cualquier detalle que conozcas — por ejemplo el idioma de los carteles, un nombre de calle, una tienda, o el país aproximado — y te orientaré mejor."
+            "Si no sabes en qué país o estado estás, intenta comunicarte con los servicios "
+            "de emergencia locales si existe un peligro inmediato. Si puedes, dime cualquier "
+            "detalle de tu ubicación y te ayudaré a encontrar apoyo."
         )
-        title = "Apoyo inmediato"
+        title = "Apoyo cuando la ubicación no está clara"
     else:
         reply = (
-            "I’m really sorry this may be happening.\n\n"
-            "If you do not know where you are, focus on immediate safety first.\n\n"
-            "• If you can, look for a safe nearby person such as staff in a shop, pharmacy, hospital, station, or reception desk\n"
-            "• If there is immediate danger, call emergency services or ask someone nearby to call for you\n"
-            "• If you can use your phone safely, try sharing your location with someone you trust\n"
-            "• If you cannot speak safely, try moving toward a public or busy place\n\n"
-            "If you can, tell me anything you do know — for example the language on signs, a street name, a shop name, or the approximate country — and I’ll guide you further."
+            "If you do not know your country or state, try to contact local emergency services "
+            "if there is immediate danger. If you can share any location details, I can help "
+            "find the right support options."
         )
-        title = "Immediate support"
+        title = "Support when location is unclear"
 
     return {
         "reply": reply,
         "source": "https://hopeforjustice.org/get-help/",
         "type": "hfj",
         "title": title,
+        "source_site": "hopeforjustice",
+        "source_name": "Hope for Justice",
+        "source_domain": "hopeforjustice.org",
         "session_id": session_id,
     }
+
 
 def build_low_visibility_response(session_id: str, language: str = "en"):
     if language == "es":
         reply = (
-            "Entendido.\n\n"
-            "Mantén esta conversación breve si crees que alguien puede verla.\n\n"
-            "• Si puedes, ve a un lugar público o cerca de una persona segura\n"
-            "• Si puedes hacerlo sin riesgo, pide ayuda a personal de una tienda, farmacia, hospital o estación\n"
-            "• Si no puedes hablar, intenta compartir tu ubicación con alguien de confianza o usar una nota corta\n"
-            "• Si hay peligro inmediato, pide a alguien cercano que llame a emergencias\n\n"
-            "Si es seguro, dime solo una palabra sobre tu ubicación, por ejemplo un país, ciudad o tienda."
+            "Gracias por compartir esto. Si algo no parece correcto, puedo ayudarte a revisar "
+            "las señales y encontrar opciones de apoyo. Dime tu país o estado si quieres apoyo local."
         )
-        title = "Apoyo discreto"
+        title = "Apoyo y señales"
     else:
         reply = (
-            "Understood.\n\n"
-            "Keep this conversation brief if someone may see it.\n\n"
-            "• If you can, move toward a public place or a safe person nearby\n"
-            "• If safe, ask staff in a shop, pharmacy, hospital, or station for help\n"
-            "• If you cannot speak safely, try sharing your location with someone you trust or use a short written note\n"
-            "• If there is immediate danger, ask someone nearby to call emergency services\n\n"
-            "If it is safe, tell me just one word about your location, such as a country, city, or shop name."
+            "Thank you for sharing that. If something does not feel right, I can help you review "
+            "warning signs and find support options. Tell me your country or state if you want local support."
         )
-        title = "Discreet support"
+        title = "Support and warning signs"
 
     return {
         "reply": reply,
-        "source": "https://hopeforjustice.org/get-help/",
+        "source": "https://hopeforjustice.org/spot-the-signs/",
         "type": "hfj",
         "title": title,
+        "source_site": "hopeforjustice",
+        "source_name": "Hope for Justice",
+        "source_domain": "hopeforjustice.org",
         "session_id": session_id,
+    }
+
+
+def build_country_response(country_key: str, language: str = "en"):
+    route = get_support_route(country_key)
+
+    if not route:
+        if language == "es":
+            reply = (
+                "No pude encontrar una ruta de apoyo específica para esa ubicación. "
+                "Consulta ayuda oficial local o dime otro país o estado."
+            )
+            title = "Apoyo local no encontrado"
+        else:
+            reply = (
+                "I could not find a specific support route for that location. "
+                "Please check official local help or tell me another country or state."
+            )
+            title = "Local support not found"
+
+        meta = _source_meta_for_region("belgium")
+        return {
+            "reply": reply,
+            "source": "https://hopeforjustice.org/get-help/",
+            "type": "hfj",
+            "title": title,
+            "source_site": meta["source_site"],
+            "source_name": meta["source_name"],
+            "source_domain": meta["source_domain"],
+        }
+
+    if language == "es":
+        lines = [f"Si estás en {route['display_name']}:"]
+
+        if route.get("emergency_text"):
+            lines.append(f"• {route['emergency_text']}")
+        if route.get("phone"):
+            lines.append(f"• Contacto de apoyo: {route['phone']}")
+        if route.get("website"):
+            lines.append(f"• Sitio web: {route['website']}")
+
+        title = f"Apoyo en {route['display_name']}"
+    else:
+        lines = [f"If you are in {route['display_name']}:"]
+
+        if route.get("emergency_text"):
+            lines.append(f"• {route['emergency_text']}")
+        if route.get("phone"):
+            lines.append(f"• Support contact: {route['phone']}")
+        if route.get("website"):
+            lines.append(f"• Website: {route['website']}")
+
+        title = f"Support in {route['display_name']}"
+
+    meta = _source_meta_for_region(country_key)
+
+    return {
+        "reply": "\n\n".join([lines[0], "\n".join(lines[1:])]) if len(lines) > 1 else lines[0],
+        "source": route.get("website") or "https://hopeforjustice.org/get-help/",
+        "type": "hfj",
+        "title": title,
+        "source_site": meta["source_site"],
+        "source_name": meta["source_name"],
+        "source_domain": meta["source_domain"],
+    }
+
+
+def build_us_state_response(state_name: str, language: str = "en"):
+    state_slug = state_name.strip().lower().replace(" ", "-")
+    source_url = f"https://humantraffickinghotline.org/en/{state_slug}"
+
+    if language == "es":
+        reply = (
+            f"Si estás en {state_name}, puedes buscar ayuda y servicios locales a través de la "
+            f"National Human Trafficking Hotline.\n\n"
+            f"• Si existe un peligro inmediato, llama al 911.\n"
+            f"• Línea de apoyo: 1-888-373-7888\n"
+            f"• Sitio web: {source_url}"
+        )
+        title = f"Apoyo en {state_name}"
+    else:
+        reply = (
+            f"If you are in {state_name}, you can look for local help and services through the "
+            f"National Human Trafficking Hotline.\n\n"
+            f"• Call 911 if there is immediate danger.\n"
+            f"• Support contact: 1-888-373-7888\n"
+            f"• Website: {source_url}"
+        )
+        title = f"Support in {state_name}"
+
+    return {
+        "reply": reply,
+        "source": source_url,
+        "type": "hfj",
+        "title": title,
+        "source_site": "humantraffickinghotline",
+        "source_name": "US National Human Trafficking Hotline",
+        "source_domain": "humantraffickinghotline.org",
     }
