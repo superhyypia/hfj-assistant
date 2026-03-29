@@ -300,7 +300,7 @@ def chat(req: ChatRequest):
         is_low_visibility = is_low_visibility_signal(user_input)
         user_region = infer_user_region(location or session.get("saved_location"))
 
-                call_help_phrases = [
+        call_help_phrases = [
             "who do i call",
             "who can i call",
             "who should i call",
