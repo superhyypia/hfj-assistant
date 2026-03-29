@@ -321,8 +321,14 @@ def chat(req: ChatRequest):
         user_region = infer_user_region(location or session.get("saved_location"))
 
         retrieval_match = None
-        if looks_like_general_question(text) or not is_help:
-            retrieval_match = find_match(text, user_region=user_region, language=language)
+        
+        informational_query = (
+            looks_like_general_question(text)
+            or any(word in text for word in ["signs", "recruit", "define", "what is", "what are"])
+        )
+
+if informational_query:
+    retrieval_match = find_match(text, user_region=user_region, language=language)
 
         plan = plan_next_actions(
             text=text,
