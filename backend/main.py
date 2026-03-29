@@ -300,29 +300,6 @@ def chat(req: ChatRequest):
         is_low_visibility = is_low_visibility_signal(user_input)
         user_region = infer_user_region(location or session.get("saved_location"))
 
-        call_help_phrases = [
-            "who do i call",
-            "who can i call",
-            "who should i call",
-            "who do i contact",
-            "who can i contact",
-            "who should i contact",
-        ]
-
-        if any(phrase in text for phrase in call_help_phrases) and user_region:
-            if user_region == "united_states" and location and location.get("kind") == "state":
-                result = build_us_state_response(location["value"], language=language)
-            else:
-                result = build_country_response(user_region, language=language)
-
-            result["session_id"] = session_id
-            result["language"] = language
-            result["agent_plan"] = {
-                "actions": ["route_support_direct"],
-                "reason": "call/contact help request with region detected",
-            }
-            return result
-
         retrieval_match = None
         if looks_like_general_question(text) or not is_help:
             retrieval_match = find_match(text, user_region=user_region, language=language)
