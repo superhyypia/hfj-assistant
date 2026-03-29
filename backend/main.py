@@ -94,6 +94,51 @@ def get_admin_sources():
             "message": str(e),
         }
 
+from pydantic import BaseModel
+
+class SourceUpdate(BaseModel):
+    name: str | None = None
+    domain: str | None = None
+    base_url: str | None = None
+    region: str | None = None
+    source_type: str | None = None
+    priority: int | None = None
+    status: str | None = None
+
+
+@app.patch("/admin/sources/{source_id}")
+def update_source(source_id: int, update: SourceUpdate):
+    from db import get_db_connection
+
+    fields = []
+    values = []
+
+    for field, value in update.dict(exclude_none=True).items():
+        fields.append(f"{field} = %s")
+        values.append(value)
+
+    if not fields:
+        return {"status": "no changes"}
+
+    values.append(source_id)
+
+    query = f"""
+        UPDATE hfj_sources
+        SET {', '.join(fields)}
+        WHERE id = %s
+    """
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, values)
+            conn.commit()
+
+        return {"status": "ok"}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.post("/admin/sources")
 def create_source(source: SourceCreate):
     try:
