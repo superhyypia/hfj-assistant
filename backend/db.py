@@ -51,8 +51,11 @@ def init_db():
             # -------------------------
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS hfj_content_chunks (
+            CREATE TABLE IF NOT EXISTS hfj_content_chunks (
                     id BIGSERIAL PRIMARY KEY,
+                    source_id BIGINT,
+                    source_name TEXT,
+                    source_domain TEXT,
                     source_url TEXT NOT NULL,
                     source_site TEXT NOT NULL DEFAULT 'hopeforjustice',
                     region TEXT NOT NULL DEFAULT 'global',
@@ -65,6 +68,25 @@ def init_db():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE(source_url, chunk_index)
                 )
+                """
+            )
+
+            cur.execute(
+            """
+            ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS source_id BIGINT
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS source_name TEXT
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS source_domain TEXT
                 """
             )
 
