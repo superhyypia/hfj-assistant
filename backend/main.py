@@ -374,7 +374,8 @@ def chat(req: ChatRequest):
                 "agent_plan": plan,
             }
 
-        if plan["actions"] in (["answer_from_retrieval"], ["answer_with_polish"]) and retrieval_match:
+        # ALWAYS use retrieval if we have a strong match
+        if retrieval_match:
             return {
                 "reply": add_safety_footer(retrieval_match["answer"], language),
                 "source": retrieval_match["source"],
