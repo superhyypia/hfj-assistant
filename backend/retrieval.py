@@ -114,25 +114,19 @@ def format_phone_answer(answer: str, source_site: str, query: str) -> str:
     if "garda" in query.lower() and phone:
         return (
             f"The Garda Confidential Line is {phone}.\n\n"
-            f"You can use this number to report concerns confidentially.\n\n"
-            f"Source: {src}"
+            f"You can use this number to report concerns confidentially."
         )
 
     if phone:
-        return (
-            f"The contact number is {phone}.\n\n"
-            f"Source: {src}"
-        )
+        return f"The contact number is {phone}."
 
-    return f"{clean_sentence(answer)}\n\nSource: {src}"
+    return clean_sentence(answer)
 
 
 def format_definition_answer(answer: str, source_site: str) -> str:
-    src = source_name(source_site)
     sentences = split_sentences(answer)
     summary = " ".join(sentences[:2]) if sentences else answer
-    summary = clean_sentence(summary, max_len=260)
-    return f"{summary}\n\nSource: {src}"
+    return clean_sentence(summary, max_len=260)
 
 
 def lines_from_text(answer: str, max_items: int = 4) -> list[str]:
@@ -163,41 +157,37 @@ def lines_from_text(answer: str, max_items: int = 4) -> list[str]:
 
 
 def format_steps_answer(answer: str, source_site: str) -> str:
-    src = source_name(source_site)
     lines = lines_from_text(answer, max_items=3)
 
     if not lines:
-        return f"{clean_sentence(answer)}\n\nSource: {src}"
+        return clean_sentence(answer)
 
     bullets = "\n".join(f"• {line}" for line in lines)
-    return f"Here are the key steps:\n{bullets}\n\nSource: {src}"
+    return f"Here are the key steps:\n{bullets}"
 
 
 def format_tactics_answer(answer: str, source_site: str) -> str:
-    src = source_name(source_site)
     lines = lines_from_text(answer, max_items=5)
 
     if not lines:
-        return f"{clean_sentence(answer)}\n\nSource: {src}"
+        return clean_sentence(answer)
 
     bullets = "\n".join(f"• {line}" for line in lines)
-    return f"Common recruiting tactics include:\n{bullets}\n\nSource: {src}"
+    return f"Common recruiting tactics include:\n{bullets}"
 
 
 def format_signs_answer(answer: str, source_site: str) -> str:
-    src = source_name(source_site)
     lines = lines_from_text(answer, max_items=5)
 
     if not lines:
-        return f"{clean_sentence(answer)}\n\nSource: {src}"
+        return clean_sentence(answer)
 
     bullets = "\n".join(f"• {line}" for line in lines)
-    return f"Common signs can include:\n{bullets}\n\nSource: {src}"
+    return f"Common signs can include:\n{bullets}"
 
 
 def format_summary_answer(answer: str, source_site: str) -> str:
-    src = source_name(source_site)
-    return f"{clean_sentence(answer, max_len=240)}\n\nSource: {src}"
+    return clean_sentence(answer, max_len=240)
 
 
 def format_answer(answer: str, source_site: str, query: str) -> str:
@@ -226,7 +216,9 @@ def keyword_search(query: str, limit: int = 8) -> Optional[dict]:
     if not terms:
         return None
 
-    like_clauses = " OR ".join(["content ILIKE %s OR COALESCE(section_heading,'') ILIKE %s" for _ in terms])
+    like_clauses = " OR ".join(
+        ["content ILIKE %s OR COALESCE(section_heading,'') ILIKE %s" for _ in terms]
+    )
     values = []
     for term in terms:
         values.extend([f"%{term}%", f"%{term}%"])
@@ -235,7 +227,15 @@ def keyword_search(query: str, limit: int = 8) -> Optional[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT content, source_url, page_title, section_heading, source_site, region
+                SELECT
+                    content,
+                    source_url,
+                    page_title,
+                    section_heading,
+                    source_site,
+                    region,
+                    source_name,
+                    source_domain
                 FROM hfj_content_chunks
                 WHERE {like_clauses}
                 LIMIT {limit}
@@ -306,6 +306,8 @@ def keyword_search(query: str, limit: int = 8) -> Optional[dict]:
         "title": best_row[2],
         "section_heading": best_row[3],
         "source_site": best_row[4],
+        "source_name": best_row[6],
+        "source_domain": best_row[7],
         "confidence": 0.65,
         "score": round(best_score, 3),
     }
@@ -328,7 +330,9 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
                     page_title,
                     section_heading,
                     source_site,
-                    region
+                    region,
+                    source_name,
+                    source_domain
                 FROM hfj_content_chunks
                 """
             )
@@ -356,6 +360,8 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         section_heading = row[4] or ""
         source_site = row[5] or ""
         region = row[6]
+        chunk_source_name = row[7] or ""
+        chunk_source_domain = row[8] or ""
 
         if not embedding_json:
             continue
@@ -372,7 +378,6 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         heading_l = section_heading.lower()
         title_l = page_title.lower()
 
-        # Generic overlap
         for word in re.findall(r"[a-zA-Z']+", query_l):
             if len(word) <= 3:
                 continue
@@ -383,14 +388,12 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
             elif word in content_l:
                 score += 0.03
 
-        # Strong heading boost for exact intent terms
         for term in intent_terms.get(intent, []):
             if term in heading_l:
                 score += 0.9
             if term in content_l:
                 score += 0.18
 
-        # Known factual query boosts
         if "garda" in query_l and "garda" in content_l:
             score += 0.8
         if "confidential" in query_l and "confidential" in content_l:
@@ -398,15 +401,12 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         if "line" in query_l and "call" in content_l:
             score += 0.25
 
-        # Region boost
         if user_region and region == user_region:
             score += 0.18
 
-        # Prefer strong/trusted sources slightly
         if source_site in {"rcmp_ca", "citizensinformation_ie", "hopeforjustice", "hse", "modernslavery_uk"}:
             score += 0.08
 
-        # Penalise generic intro sections for more specific intents
         if intent in {"tactics", "signs", "steps"}:
             if "what is human trafficking" in heading_l:
                 score -= 0.8
@@ -421,6 +421,8 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
             "title": page_title,
             "section_heading": section_heading,
             "source_site": source_site,
+            "source_name": chunk_source_name,
+            "source_domain": chunk_source_domain,
             "confidence": round(score, 3),
             "score": round(score, 3),
         }
