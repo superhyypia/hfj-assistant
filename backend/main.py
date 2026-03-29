@@ -76,6 +76,22 @@ class SourceCreate(BaseModel):
     status: str = "active"
 
 
+def is_affirmative_reply(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in {
+        "yes",
+        "yes please",
+        "yeah",
+        "yep",
+        "ok",
+        "okay",
+        "please do",
+        "go ahead",
+        "find them",
+        "show me",
+    }
+
+
 @app.on_event("startup")
 def startup_event():
     init_db()
@@ -306,6 +322,7 @@ def chat(req: ChatRequest):
             {
                 "stage": None,
                 "saved_location": None,
+                "pending_country_lookup": None,
                 "language": language,
             },
         )
@@ -476,6 +493,69 @@ def chat(req: ChatRequest):
                 region_detected=user_region,
                 language=language,
                 is_fallback=False,
+            )
+            return result
+
+        # 3) Follow-up: user accepted official organisation lookup
+        if session.get("stage") == "offer_official_org_lookup" and is_affirmative_reply(text):
+            country_hint = session.get("pending_country_lookup") or user_region or "that country"
+
+            client = get_openai_client()
+            if not client:
+                raise HTTPException(status_code=500, detail="Missing API key")
+
+            response = client.responses.create(
+                model="gpt-4o",
+                input=f"""
+You are the Hope for Justice assistant.
+
+Respond in {"Spanish" if language == "es" else "English"}.
+
+The user has asked for help identifying official organisations in {country_hint}.
+
+Important safety rules:
+- Do NOT provide phone numbers unless they are verified from trusted sources in the conversation context.
+- Do NOT invent hotlines or contact details.
+- Focus on official organisations, government bodies, police, emergency services, and trusted NGO categories.
+- Keep the answer short, practical, and safe.
+- Encourage local emergency services if there is immediate danger.
+
+User message: {user_input}
+"""
+            )
+
+            session["stage"] = None
+            session["pending_country_lookup"] = None
+
+            result = {
+                "reply": response.output_text,
+                "source": "AI-assisted official organisation guidance",
+                "type": "ai",
+                "title": "Official organisations guidance",
+                "session_id": session_id,
+                "language": language,
+                "agent_plan": {
+                    "actions": ["official_org_lookup"],
+                    "reason": "user accepted official organisation lookup",
+                },
+            }
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=None,
+                source_name=None,
+                source_domain=None,
+                agent_action="official_org_lookup",
+                agent_reason="user accepted official organisation lookup",
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=True,
             )
             return result
 
@@ -716,6 +796,9 @@ def chat(req: ChatRequest):
         countries = ["ireland", "uk", "canada", "denmark", "mexico", "usa", "united states"]
 
         if any(k in text for k in contact_keywords) and any(c in text for c in countries):
+            session["stage"] = "offer_official_org_lookup"
+            session["pending_country_lookup"] = user_region or (location["value"] if location else None)
+
             result = {
                 "reply": (
                     "I couldn’t verify a country-specific trafficking contact number from trusted sources.\n\n"
