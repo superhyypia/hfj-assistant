@@ -2,10 +2,6 @@ import re
 
 
 def is_low_visibility_signal(text: str) -> bool:
-    """
-    Detect softer, indirect concern signals where the user may be worried
-    but is not explicitly asking for help yet.
-    """
     if not text:
         return False
 
@@ -39,9 +35,6 @@ def assess_risk_level(
     is_low_visibility: bool,
     text: str,
 ) -> str:
-    """
-    Very lightweight risk classification used for planning only.
-    """
     t = (text or "").lower()
 
     urgent_terms = [
@@ -70,10 +63,47 @@ def assess_risk_level(
     return "info"
 
 
+def _looks_like_phone_query(q: str) -> bool:
+    patterns = [
+        r"\bphone number\b",
+        r"\bcontact number\b",
+        r"\bhotline\b",
+        r"\bhelpline\b",
+        r"\bconfidential line\b",
+        r"\bwhat is .* number\b",
+        r"\bwhat is .* line\b",
+        r"\bcall\b",
+        r"\bcontact\b",
+    ]
+    return any(re.search(pattern, q) for pattern in patterns)
+
+
+def _looks_like_signs_query(q: str) -> bool:
+    patterns = [
+        r"\bsigns of\b",
+        r"\bwhat are the signs\b",
+        r"\bspot the signs\b",
+        r"\bindicators\b",
+        r"\bwarning signs\b",
+    ]
+    return any(re.search(pattern, q) for pattern in patterns)
+
+
+def _looks_like_tactics_query(q: str) -> bool:
+    patterns = [
+        r"\brecruit\b",
+        r"\brecruitment\b",
+        r"\btactics\b",
+        r"\bmethods\b",
+        r"\bhow do traffickers recruit\b",
+    ]
+    return any(re.search(pattern, q) for pattern in patterns)
+
+
 def _looks_like_definition_query(q: str) -> bool:
     return (
-        q.startswith("what is ")
-        or q.startswith("define ")
+        q.startswith("define ")
+        or q.startswith("what is ")
         or q.startswith("what are ")
         or q.startswith("explain ")
     )
@@ -92,9 +122,6 @@ def _looks_like_support_contact_query(q: str) -> bool:
         r"\bneed help\b",
         r"\bi need help\b",
         r"\bget help\b",
-        r"\bhotline\b",
-        r"\bhelpline\b",
-        r"\bcontact number\b",
     ]
     return any(re.search(pattern, q) for pattern in support_patterns)
 
@@ -110,23 +137,6 @@ def plan_next_actions(
 ):
     q = (text or "").lower().strip()
 
-    # ---------------------------
-    # 1. Strong definition / knowledge intent
-    # ---------------------------
-    if _looks_like_definition_query(q):
-        if retrieval_match:
-            return {
-                "actions": ["answer_from_retrieval"],
-                "reason": "definition query",
-            }
-        return {
-            "actions": ["answer_with_llm"],
-            "reason": "definition query without retrieval match",
-        }
-
-    # ---------------------------
-    # 2. Assess risk
-    # ---------------------------
     risk_level = assess_risk_level(
         is_help=is_help,
         is_unknown_location=is_unknown_location,
@@ -134,9 +144,6 @@ def plan_next_actions(
         text=text,
     )
 
-    # ---------------------------
-    # 3. Unknown-location support
-    # ---------------------------
     if is_unknown_location:
         return {
             "actions": ["unknown_location_support"],
@@ -144,9 +151,6 @@ def plan_next_actions(
             "risk_level": risk_level,
         }
 
-    # ---------------------------
-    # 4. Low-visibility / indirect concern
-    # ---------------------------
     if is_low_visibility and not is_help:
         return {
             "actions": ["low_visibility_support"],
@@ -154,9 +158,6 @@ def plan_next_actions(
             "risk_level": risk_level,
         }
 
-    # ---------------------------
-    # 5. Direct support / reporting / contact routing
-    # ---------------------------
     if is_help or _looks_like_support_contact_query(q):
         if has_location or session.get("saved_location"):
             return {
@@ -164,36 +165,72 @@ def plan_next_actions(
                 "reason": "support request with location",
                 "risk_level": risk_level,
             }
-
         return {
             "actions": ["ask_location"],
             "reason": "support request without location",
             "risk_level": risk_level,
         }
 
-    # ---------------------------
-    # 6. Strong retrieval for knowledge queries
-    # ---------------------------
-    if retrieval_match and retrieval_match.get("score", 0) >= 0.68:
+    # Order matters: phone/signs/tactics BEFORE definition
+    if _looks_like_phone_query(q):
+        if retrieval_match:
+            return {
+                "actions": ["answer_from_retrieval"],
+                "reason": "phone query",
+                "risk_level": risk_level,
+            }
         return {
-            "actions": ["answer_from_retrieval"],
+            "actions": ["answer_with_llm"],
+            "reason": "phone query without retrieval match",
+            "risk_level": risk_level,
+        }
+
+    if _looks_like_signs_query(q):
+        if retrieval_match:
+            return {
+                "actions": ["answer_from_retrieval"],
+                "reason": "signs query",
+                "risk_level": risk_level,
+            }
+        return {
+            "actions": ["answer_with_llm"],
+            "reason": "signs query without retrieval match",
+            "risk_level": risk_level,
+        }
+
+    if _looks_like_tactics_query(q):
+        if retrieval_match:
+            return {
+                "actions": ["answer_from_retrieval"],
+                "reason": "tactics query",
+                "risk_level": risk_level,
+            }
+        return {
+            "actions": ["answer_with_llm"],
+            "reason": "tactics query without retrieval match",
+            "risk_level": risk_level,
+        }
+
+    if _looks_like_definition_query(q):
+        if retrieval_match:
+            return {
+                "actions": ["answer_from_retrieval"],
+                "reason": "definition query",
+                "risk_level": risk_level,
+            }
+        return {
+            "actions": ["answer_with_llm"],
+            "reason": "definition query without retrieval match",
+            "risk_level": risk_level,
+        }
+
+    if retrieval_match:
+        return {
+            "actions": ["answer_with_polish"],
             "reason": "strong retrieval match",
             "risk_level": risk_level,
         }
 
-    # ---------------------------
-    # 7. Weak retrieval can still be polished if available
-    # ---------------------------
-    if retrieval_match:
-        return {
-            "actions": ["answer_with_polish"],
-            "reason": "weak retrieval match",
-            "risk_level": risk_level,
-        }
-
-    # ---------------------------
-    # 8. Final fallback
-    # ---------------------------
     return {
         "actions": ["answer_with_llm"],
         "reason": "fallback",
