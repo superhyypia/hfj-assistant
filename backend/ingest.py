@@ -8,7 +8,7 @@ from ai import embed_texts
 from db import get_db_connection
 from utils import normalize_whitespace
 
-USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.5)"
+USER_AGENT = "Mozilla/5.0 (compatible; HFJ-Assistant-MVP/1.6)"
 
 JUNK_PATTERNS = [
     "out of date browser",
@@ -87,6 +87,9 @@ def chunk_text(text: str, max_chars: int = 1200) -> list[str]:
 def parse_page(
     html: str,
     url: str,
+    source_id: int | None,
+    source_name: str | None,
+    source_domain: str | None,
     source_site: str,
     region: str,
     content_type: str,
@@ -125,6 +128,9 @@ def parse_page(
         for chunk in chunk_text(joined):
             sections.append(
                 {
+                    "source_id": source_id,
+                    "source_name": source_name,
+                    "source_domain": source_domain,
                     "source_url": url,
                     "source_site": source_site,
                     "region": region,
@@ -164,6 +170,9 @@ def upsert_sections(sections: list[dict]) -> int:
         embedding_json = json.dumps(embeddings[idx - 1]) if idx - 1 < len(embeddings) else None
         rows.append(
             (
+                section["source_id"],
+                section["source_name"],
+                section["source_domain"],
                 section["source_url"],
                 section["source_site"],
                 section["region"],
@@ -183,8 +192,21 @@ def upsert_sections(sections: list[dict]) -> int:
             cur.executemany(
                 """
                 INSERT INTO hfj_content_chunks
-                (source_url, source_site, region, content_type, page_title, chunk_index, section_heading, content, embedding_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (
+                    source_id,
+                    source_name,
+                    source_domain,
+                    source_url,
+                    source_site,
+                    region,
+                    content_type,
+                    page_title,
+                    chunk_index,
+                    section_heading,
+                    content,
+                    embedding_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 rows,
             )
@@ -210,25 +232,31 @@ def get_active_ingest_sources() -> list[dict]:
 
     sources = []
     for row in rows:
+        source_id = row[0]
+        name = row[1]
         domain = row[2]
         base_url = row[3]
-        parsed = urlparse(base_url)
+        region = row[4] or "global"
+        source_type = row[5]
+        priority = row[6]
+        status = row[7]
 
+        parsed = urlparse(base_url)
         if not parsed.scheme or not parsed.netloc:
             continue
 
         sources.append(
             {
-                "id": row[0],
-                "name": row[1],
+                "id": source_id,
+                "name": name,
                 "domain": domain,
                 "url": base_url,
                 "source_site": domain_to_source_site(domain),
-                "region": row[4] or "global",
+                "region": region,
                 "content_type": "resource",
-                "source_type": row[5],
-                "priority": row[6],
-                "status": row[7],
+                "source_type": source_type,
+                "priority": priority,
+                "status": status,
             }
         )
 
@@ -241,6 +269,9 @@ def ingest_source(source: dict) -> dict:
         page_title, sections = parse_page(
             html=html,
             url=source["url"],
+            source_id=source.get("id"),
+            source_name=source.get("name"),
+            source_domain=source.get("domain"),
             source_site=source["source_site"],
             region=source["region"],
             content_type=source.get("content_type", "resource"),
@@ -250,6 +281,7 @@ def ingest_source(source: dict) -> dict:
         return {
             "id": source.get("id"),
             "name": source.get("name"),
+            "domain": source.get("domain"),
             "url": source["url"],
             "source_site": source["source_site"],
             "region": source["region"],
@@ -262,6 +294,7 @@ def ingest_source(source: dict) -> dict:
         return {
             "id": source.get("id"),
             "name": source.get("name"),
+            "domain": source.get("domain"),
             "url": source.get("url"),
             "source_site": source.get("source_site"),
             "status": "error",
