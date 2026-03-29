@@ -377,12 +377,15 @@ def chat(req: ChatRequest):
         # ALWAYS use retrieval if we have a strong match
         if retrieval_match:
             return {
-                "reply": add_safety_footer(retrieval_match["answer"], language),
+                "reply": add_safety_footer(
+                    clean_answer_text(retrieval_match["answer"]),
+                    language
+                ),
                 "source": retrieval_match["source"],
                 "type": "hfj",
                 "title": retrieval_match["title"],
                 "section_heading": retrieval_match["section_heading"],
-                "source_site": retrieval_match["source_site"],
+                "source_site": retrieval_match.get("source_site") or "unknown",
                 "confidence": retrieval_match["confidence"],
                 "score": retrieval_match["score"],
                 "second_score": retrieval_match.get("second_score"),
