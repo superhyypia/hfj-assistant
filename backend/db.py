@@ -4,18 +4,12 @@ import psycopg
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-# =========================
-# Connection
-# =========================
 def get_db_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
     return psycopg.connect(DATABASE_URL)
 
 
-# =========================
-# Health Check
-# =========================
 def check_db_health():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -24,16 +18,9 @@ def check_db_health():
             return result[0] == 1
 
 
-# =========================
-# Init DB (tables + seeds)
-# =========================
 def init_db():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-
-            # -------------------------
-            # Support Routes
-            # -------------------------
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hfj_support_routes (
@@ -46,12 +33,9 @@ def init_db():
                 """
             )
 
-            # -------------------------
-            # Content Chunks (RAG)
-            # -------------------------
             cur.execute(
                 """
-            CREATE TABLE IF NOT EXISTS hfj_content_chunks (
+                CREATE TABLE IF NOT EXISTS hfj_content_chunks (
                     id BIGSERIAL PRIMARY KEY,
                     source_id BIGINT,
                     source_name TEXT,
@@ -72,8 +56,8 @@ def init_db():
             )
 
             cur.execute(
-            """
-            ALTER TABLE hfj_content_chunks
+                """
+                ALTER TABLE hfj_content_chunks
                 ADD COLUMN IF NOT EXISTS source_id BIGINT
                 """
             )
@@ -89,10 +73,31 @@ def init_db():
                 ADD COLUMN IF NOT EXISTS source_domain TEXT
                 """
             )
+            cur.execute(
+                """
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS source_site TEXT NOT NULL DEFAULT 'hopeforjustice'
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'global'
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'education'
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE hfj_content_chunks
+                ADD COLUMN IF NOT EXISTS embedding_json TEXT
+                """
+            )
 
-            # -------------------------
-            # AI Cache
-            # -------------------------
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ai_country_support_cache (
@@ -105,9 +110,13 @@ def init_db():
                 """
             )
 
-            # -------------------------
-            # NEW: Sources Table (Admin)
-            # -------------------------
+            cur.execute(
+                """
+                ALTER TABLE ai_country_support_cache
+                ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'en'
+                """
+            )
+
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hfj_sources (
@@ -124,9 +133,6 @@ def init_db():
                 """
             )
 
-            # -------------------------
-            # Seed Support Routes
-            # -------------------------
             cur.executemany(
                 """
                 INSERT INTO hfj_support_routes
@@ -135,17 +141,44 @@ def init_db():
                 ON CONFLICT (region_key) DO NOTHING
                 """,
                 [
-                    ("ireland", "Ireland", "Call 112 or 999 if there is immediate danger.", "01 795 8280", "https://www2.hse.ie/services/human-trafficking/"),
-                    ("uk", "United Kingdom", "Call 999 if there is immediate danger.", "0800 0121 700", "https://www.modernslavery.gov.uk/"),
-                    ("united_states", "United States", "Call 911 if there is immediate danger.", "1-888-373-7888", "https://humantraffickinghotline.org/en/contact"),
-                    ("canada", "Canada", "Call 911 if there is immediate danger.", "1-833-900-1010", "https://www.canadianhumantraffickinghotline.ca/"),
-                    ("belgium", "Belgium", "Contact local emergency services if there is immediate danger.", None, "https://hopeforjustice.org/get-help/"),
+                    (
+                        "ireland",
+                        "Ireland",
+                        "Call 112 or 999 if there is immediate danger.",
+                        "01 795 8280",
+                        "https://www2.hse.ie/services/human-trafficking/",
+                    ),
+                    (
+                        "uk",
+                        "United Kingdom",
+                        "Call 999 if there is immediate danger.",
+                        "0800 0121 700",
+                        "https://www.modernslavery.gov.uk/",
+                    ),
+                    (
+                        "united_states",
+                        "United States",
+                        "Call 911 if there is immediate danger.",
+                        "1-888-373-7888",
+                        "https://humantraffickinghotline.org/en/contact",
+                    ),
+                    (
+                        "canada",
+                        "Canada",
+                        "Call 911 if there is immediate danger.",
+                        "1-833-900-1010",
+                        "https://www.canadianhumantraffickinghotline.ca/",
+                    ),
+                    (
+                        "belgium",
+                        "Belgium",
+                        "Contact local emergency services if there is immediate danger.",
+                        None,
+                        "https://hopeforjustice.org/get-help/",
+                    ),
                 ],
             )
 
-            # -------------------------
-            # Seed Sources
-            # -------------------------
             cur.executemany(
                 """
                 INSERT INTO hfj_sources
@@ -154,18 +187,66 @@ def init_db():
                 ON CONFLICT (domain) DO NOTHING
                 """,
                 [
-                    ("Hope for Justice", "hopeforjustice.org", "https://hopeforjustice.org/", "global", "official", 100, "active"),
-                    ("HSE", "hse.ie", "https://www2.hse.ie/services/human-trafficking/", "ireland", "official", 95, "active"),
-                    ("Modern Slavery Helpline", "modernslaveryhelpline.org", "https://www.modernslaveryhelpline.org/", "uk", "secondary", 85, "active"),
+                    (
+                        "Hope for Justice",
+                        "hopeforjustice.org",
+                        "https://hopeforjustice.org/human-trafficking/",
+                        "global",
+                        "official",
+                        100,
+                        "active",
+                    ),
+                    (
+                        "HSE Ireland",
+                        "hse.ie",
+                        "https://www2.hse.ie/services/human-trafficking/",
+                        "ireland",
+                        "official",
+                        95,
+                        "active",
+                    ),
+                    (
+                        "UK Modern Slavery Helpline",
+                        "modernslaveryhelpline.org",
+                        "https://www.modernslaveryhelpline.org/",
+                        "uk",
+                        "secondary",
+                        85,
+                        "active",
+                    ),
+                    (
+                        "Citizens Information Ireland",
+                        "citizensinformation.ie",
+                        "https://www.citizensinformation.ie/en/justice/crime-and-crime-prevention/human-trafficking/",
+                        "ireland",
+                        "official",
+                        96,
+                        "active",
+                    ),
+                    (
+                        "Royal Canadian Mounted Police",
+                        "rcmp.ca",
+                        "https://rcmp.ca/en/human-trafficking-recognizing-and-reporting/human-trafficking-works",
+                        "canada",
+                        "official",
+                        88,
+                        "active",
+                    ),
+                    (
+                        "US National Human Trafficking Hotline",
+                        "humantraffickinghotline.org",
+                        "https://humantraffickinghotline.org/en/contact",
+                        "united_states",
+                        "official",
+                        92,
+                        "active",
+                    ),
                 ],
             )
 
         conn.commit()
 
 
-# =========================
-# Queries
-# =========================
 def get_sources():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
