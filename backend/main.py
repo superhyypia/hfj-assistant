@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import re
 import uuid
 
 from agent import is_low_visibility_signal, plan_next_actions
@@ -320,8 +321,165 @@ def chat(req: ChatRequest):
         is_low_visibility = is_low_visibility_signal(user_input)
         user_region = infer_user_region(location or session.get("saved_location"))
 
+        # 1) Location-only guard
+        location_only_patterns = [
+            r"^i am in ",
+            r"^i'm in ",
+            r"^im in ",
+            r"^i am located in ",
+            r"^i'm located in ",
+            r"^im located in ",
+        ]
+
+        is_location_only_message = (
+            location is not None
+            and any(re.search(pattern, text) for pattern in location_only_patterns)
+            and not is_help
+        )
+
+        if is_location_only_message:
+            session["saved_location"] = location
+
+            if session.get("stage") == "awaiting_location":
+                session["stage"] = None
+
+                if location["kind"] == "state":
+                    result = build_us_state_response(location["value"], language=language)
+                else:
+                    result = build_country_response(location["value"], language=language)
+
+                result["session_id"] = session_id
+                result["language"] = language
+                result["agent_plan"] = {
+                    "actions": ["route_support"],
+                    "reason": "location provided while awaiting location",
+                }
+
+                log_conversation_turn(
+                    session_id=session_id,
+                    user_message=user_input,
+                    assistant_reply=result["reply"],
+                    response_type=result.get("type"),
+                    title=result.get("title"),
+                    source=result.get("source"),
+                    source_site=result.get("source_site"),
+                    source_name=result.get("source_name"),
+                    source_domain=result.get("source_domain"),
+                    agent_action="route_support",
+                    agent_reason="location provided while awaiting location",
+                    score=None,
+                    region_detected=user_region,
+                    language=language,
+                    is_fallback=False,
+                )
+                return result
+
+            result = {
+                "reply": (
+                    f"Thanks — I’ve noted your location as {location['value']}. Tell me what kind of help or information you need."
+                    if language == "en"
+                    else
+                    f"Gracias — he registrado tu ubicación como {location['value']}. Dime qué tipo de ayuda o información necesitas."
+                ),
+                "source": "https://hopeforjustice.org/get-help/",
+                "type": "hfj",
+                "title": "Location noted" if language == "en" else "Ubicación registrada",
+                "source_site": "hopeforjustice",
+                "source_name": "Hope for Justice",
+                "source_domain": "hopeforjustice.org",
+                "session_id": session_id,
+                "language": language,
+                "agent_plan": {
+                    "actions": ["save_location_only"],
+                    "reason": "location statement without help request",
+                },
+            }
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action="save_location_only",
+                agent_reason="location statement without help request",
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
+            return result
+
+        # 2) Phone / speaking constraint guard
+        phone_constraint_phrases = [
+            "i can't use my phone",
+            "i cant use my phone",
+            "i can't call",
+            "i cant call",
+            "i don't have my phone",
+            "i dont have my phone",
+            "i can't speak",
+            "i cant speak",
+            "i can't talk",
+            "i cant talk",
+            "i can't call anyone",
+            "i cant call anyone",
+        ]
+
+        if any(phrase in text for phrase in phone_constraint_phrases):
+            result = {
+                "reply": (
+                    "If you can’t use your phone, try to get help in another safe way if possible.\n\n"
+                    "• Go to a place where other people are nearby\n"
+                    "• Approach someone you trust, such as staff, security, healthcare workers, or police\n"
+                    "• If you can, write a note or use another device\n"
+                    "• Tell me what is safest for you right now and I’ll help think through options"
+                    if language == "en"
+                    else
+                    "Si no puedes usar tu teléfono, intenta buscar ayuda de otra manera segura si es posible.\n\n"
+                    "• Ve a un lugar donde haya otras personas\n"
+                    "• Acércate a alguien de confianza, como personal, seguridad, profesionales de salud o policía\n"
+                    "• Si puedes, escribe una nota o usa otro dispositivo\n"
+                    "• Dime qué es lo más seguro para ti ahora mismo y te ayudaré a pensar en opciones"
+                ),
+                "source": "https://hopeforjustice.org/get-help/",
+                "type": "hfj",
+                "title": "Safer ways to get help" if language == "en" else "Formas más seguras de pedir ayuda",
+                "source_site": "hopeforjustice",
+                "source_name": "Hope for Justice",
+                "source_domain": "hopeforjustice.org",
+                "session_id": session_id,
+                "language": language,
+                "agent_plan": {
+                    "actions": ["handle_phone_constraint"],
+                    "reason": "user cannot use phone",
+                },
+            }
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action="handle_phone_constraint",
+                agent_reason="user cannot use phone",
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
+            return result
+
         retrieval_match = None
-        
         informational_query = (
             looks_like_general_question(text)
             or any(word in text for word in ["signs", "recruit", "define", "what is", "what are"])
@@ -329,16 +487,16 @@ def chat(req: ChatRequest):
 
         if informational_query:
             retrieval_match = find_match(text, user_region=user_region, language=language)
-        
-                plan = plan_next_actions(
-                    text=text,
-                    session=session,
-                    has_location=bool(location),
-                    is_help=is_help,
-                    is_unknown_location=is_unknown_location,
-                    is_low_visibility=is_low_visibility,
-                    retrieval_match=retrieval_match,
-                )
+
+        plan = plan_next_actions(
+            text=text,
+            session=session,
+            has_location=bool(location),
+            is_help=is_help,
+            is_unknown_location=is_unknown_location,
+            is_low_visibility=is_low_visibility,
+            retrieval_match=retrieval_match,
+        )
 
         if plan["actions"] == ["unknown_location_support"]:
             session["stage"] = None
@@ -553,7 +711,7 @@ def chat(req: ChatRequest):
             )
             return result
 
-        # 🚨 SAFETY: block AI from generating phone numbers
+        # Safety fallback for country-specific contact lookups
         contact_keywords = ["call", "contact", "number", "hotline", "helpline"]
         countries = ["ireland", "uk", "canada", "denmark", "mexico", "usa", "united states"]
 
@@ -574,6 +732,25 @@ def chat(req: ChatRequest):
                 "language": language,
                 "agent_plan": plan,
             }
+
+            log_conversation_turn(
+                session_id=session_id,
+                user_message=user_input,
+                assistant_reply=result["reply"],
+                response_type=result.get("type"),
+                title=result.get("title"),
+                source=result.get("source"),
+                source_site=result.get("source_site"),
+                source_name=result.get("source_name"),
+                source_domain=result.get("source_domain"),
+                agent_action=(plan.get("actions") or [None])[0],
+                agent_reason=plan.get("reason"),
+                score=None,
+                region_detected=user_region,
+                language=language,
+                is_fallback=False,
+            )
+            return result
 
         client = get_openai_client()
         if not client:
