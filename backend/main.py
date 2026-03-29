@@ -5,8 +5,8 @@ import uuid
 
 from agent import is_low_visibility_signal, plan_next_actions
 from ai import get_openai_client
-from db import init_db, check_db_health, get_sources, get_db_connection
-from ingest import ingest_all_sources
+from db import init_db, check_db_health, get_sources
+from ingest import ingest_all_sources, ingest_source_by_id
 from retrieval import find_match
 from support import (
     build_country_response,
@@ -39,11 +39,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+init_db()
+
 
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
     language: str | None = None
+
+
+class SourceUpdate(BaseModel):
+    name: str | None = None
+    domain: str | None = None
+    base_url: str | None = None
+    region: str | None = None
+    source_type: str | None = None
+    priority: int | None = None
+    status: str | None = None
+
 
 class SourceCreate(BaseModel):
     name: str
@@ -87,64 +100,14 @@ def admin_health():
 
 @app.get("/admin/sources")
 def get_admin_sources():
-    try:
-        return {"sources": get_sources()}
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e),
-        }
+    return {"sources": get_sources()}
 
-from pydantic import BaseModel
-
-class SourceUpdate(BaseModel):
-    name: str | None = None
-    domain: str | None = None
-    base_url: str | None = None
-    region: str | None = None
-    source_type: str | None = None
-    priority: int | None = None
-    status: str | None = None
-
-
-@app.patch("/admin/sources/{source_id}")
-def update_source(source_id: int, update: SourceUpdate):
-    from db import get_db_connection
-
-    fields = []
-    values = []
-
-    for field, value in update.dict(exclude_none=True).items():
-        fields.append(f"{field} = %s")
-        values.append(value)
-
-    if not fields:
-        return {"status": "no changes"}
-
-    values.append(source_id)
-
-    query = f"""
-        UPDATE hfj_sources
-        SET {', '.join(fields)}
-        WHERE id = %s
-    """
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, values)
-            conn.commit()
-
-        return {"status": "ok"}
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 @app.post("/admin/sources")
 def create_source(source: SourceCreate):
-    try:
-        from db import get_db_connection
+    from db import get_db_connection
 
+    try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -155,9 +118,9 @@ def create_source(source: SourceCreate):
                     RETURNING id
                     """,
                     (
-                        source.name,
-                        source.domain,
-                        source.base_url,
+                        source.name.strip(),
+                        source.domain.strip(),
+                        source.base_url.strip() if source.base_url else None,
                         source.region,
                         source.source_type,
                         source.priority,
@@ -165,23 +128,56 @@ def create_source(source: SourceCreate):
                     ),
                 )
                 new_id = cur.fetchone()[0]
-
             conn.commit()
 
         return {"status": "ok", "id": new_id}
-
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+@app.patch("/admin/sources/{source_id}")
+def update_source(source_id: int, update: SourceUpdate):
+    from db import get_db_connection
+
+    fields = []
+    values = []
+
+    update_data = update.dict(exclude_none=True)
+
+    for field, value in update_data.items():
+        fields.append(f"{field} = %s")
+        values.append(value)
+
+    if not fields:
+        return {"status": "no changes"}
+
+    values.append(source_id)
+
+    query = f"""
+        UPDATE hfj_sources
+        SET {", ".join(fields)}
+        WHERE id = %s
+    """
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, values)
+            conn.commit()
+
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @app.post("/admin/sources/{source_id}/ingest")
 def ingest_single_source(source_id: int):
-    from ingest import ingest_source_by_id
-
     try:
         result = ingest_source_by_id(source_id)
         return {"status": "ok", "result": result}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
 
 @app.get("/db-check")
 def db_check():
@@ -201,6 +197,8 @@ def db_check():
 
 @app.get("/routes")
 def routes():
+    from db import get_db_connection
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -231,6 +229,8 @@ def routes():
 
 @app.get("/content-check")
 def content_check():
+    from db import get_db_connection
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -361,7 +361,7 @@ def chat(req: ChatRequest):
             return result
 
         if plan["actions"] == ["ask_location_again"]:
-            return {
+            result = {
                 "reply": (
                     "Please tell me your country or state so I can give you the right support options."
                     if language == "en"
@@ -374,23 +374,23 @@ def chat(req: ChatRequest):
                 "language": language,
                 "agent_plan": plan,
             }
+            return result
 
-        # ALWAYS use retrieval if we have a strong match
-        if retrieval_match:
+        if plan["actions"] in (["answer_from_retrieval"], ["answer_with_polish"]) and retrieval_match:
             return {
                 "reply": add_safety_footer(
                     clean_answer_text(retrieval_match["answer"]),
                     language
                 ),
-                "source": retrieval_match["source"],
+                "source": retrieval_match.get("source"),
                 "type": "hfj",
-                "title": retrieval_match["title"],
-                "section_heading": retrieval_match["section_heading"],
+                "title": retrieval_match.get("title"),
+                "section_heading": retrieval_match.get("section_heading"),
                 "source_site": retrieval_match.get("source_site") or "unknown",
                 "source_name": retrieval_match.get("source_name"),
                 "source_domain": retrieval_match.get("source_domain"),
-                "confidence": retrieval_match["confidence"],
-                "score": retrieval_match["score"],
+                "confidence": retrieval_match.get("confidence"),
+                "score": retrieval_match.get("score"),
                 "second_score": retrieval_match.get("second_score"),
                 "session_id": session_id,
                 "language": language,
