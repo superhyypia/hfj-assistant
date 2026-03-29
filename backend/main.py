@@ -376,7 +376,8 @@ def chat(req: ChatRequest):
             }
             return result
 
-        if plan["actions"] in (["answer_from_retrieval"], ["answer_with_polish"]) and retrieval_match:
+                # FORCE retrieval when we have a strong match
+        if retrieval_match and retrieval_match.get("score", 0) >= 0.75:
             return {
                 "reply": add_safety_footer(
                     clean_answer_text(retrieval_match["answer"]),
@@ -389,7 +390,7 @@ def chat(req: ChatRequest):
                 "source_site": retrieval_match.get("source_site") or "unknown",
                 "source_name": retrieval_match.get("source_name"),
                 "source_domain": retrieval_match.get("source_domain"),
-                "confidence": retrieval_match.get("confidence"),
+                "confidence": "high",
                 "score": retrieval_match.get("score"),
                 "second_score": retrieval_match.get("second_score"),
                 "session_id": session_id,
