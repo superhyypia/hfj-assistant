@@ -6,9 +6,6 @@ from db import get_db_connection
 from ai import embed_texts
 
 
-# ---------------------------
-# Similarity
-# ---------------------------
 def cosine_similarity(a, b):
     if not a or not b or len(a) != len(b):
         return -1.0
@@ -23,9 +20,6 @@ def cosine_similarity(a, b):
     return dot / (norm_a * norm_b)
 
 
-# ---------------------------
-# Extraction helpers
-# ---------------------------
 def extract_phone_number(text: str) -> Optional[str]:
     matches = re.findall(r"\b\d{3,4}\s?\d{3}\s?\d{3}\b", text)
     return matches[0] if matches else None
@@ -54,9 +48,6 @@ def format_answer(answer: str, source_site: str, query: str) -> str:
     return clean_sentence(answer)
 
 
-# ---------------------------
-# Keyword fallback
-# ---------------------------
 def keyword_search(query: str, limit: int = 5) -> Optional[dict]:
     terms = [t.strip().lower() for t in query.split() if len(t) > 3]
 
@@ -104,9 +95,6 @@ def keyword_search(query: str, limit: int = 5) -> Optional[dict]:
     }
 
 
-# ---------------------------
-# Main retrieval
-# ---------------------------
 def find_match(query: str, user_region: str | None = None, language: str = "en"):
     query_embedding = embed_texts([query])[0]
 
@@ -149,7 +137,6 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         score = similarity
         content_l = content.lower()
 
-        # Keyword boosts
         if "garda" in query_l and "garda" in content_l:
             score += 0.25
 
@@ -159,12 +146,10 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
         if "line" in query_l and "call" in content_l:
             score += 0.1
 
-        # General word overlap boost
         for word in query_l.split():
             if len(word) > 4 and word in content_l:
                 score += 0.02
 
-        # Region boost
         region = row[6]
         if user_region and region == user_region:
             score += 0.1
@@ -183,7 +168,6 @@ def find_match(query: str, user_region: str | None = None, language: str = "en")
                 "score": round(score, 3),
             }
 
-    # Keyword fallback
     if not best or best_score < 0.75:
         keyword_result = keyword_search(query)
         if keyword_result:
