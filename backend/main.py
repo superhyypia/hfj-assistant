@@ -327,18 +327,18 @@ def chat(req: ChatRequest):
             or any(word in text for word in ["signs", "recruit", "define", "what is", "what are"])
         )
 
-if informational_query:
-    retrieval_match = find_match(text, user_region=user_region, language=language)
-
-        plan = plan_next_actions(
-            text=text,
-            session=session,
-            has_location=bool(location),
-            is_help=is_help,
-            is_unknown_location=is_unknown_location,
-            is_low_visibility=is_low_visibility,
-            retrieval_match=retrieval_match,
-        )
+        if informational_query:
+            retrieval_match = find_match(text, user_region=user_region, language=language)
+        
+                plan = plan_next_actions(
+                    text=text,
+                    session=session,
+                    has_location=bool(location),
+                    is_help=is_help,
+                    is_unknown_location=is_unknown_location,
+                    is_low_visibility=is_low_visibility,
+                    retrieval_match=retrieval_match,
+                )
 
         if plan["actions"] == ["unknown_location_support"]:
             session["stage"] = None
