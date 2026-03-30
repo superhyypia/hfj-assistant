@@ -50,6 +50,7 @@ def _country_aliases():
         "canada": ["canada"],
         "denmark": ["denmark", "danish"],
         "mexico": ["mexico"],
+        "norway": ["norway", "norwegian"],
     }
 
 
