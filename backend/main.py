@@ -793,7 +793,16 @@ User message: {user_input}
 
         # Safety fallback for country-specific contact lookups
         contact_keywords = ["call", "contact", "number", "hotline", "helpline"]
-        countries = ["ireland", "uk", "canada", "denmark", "mexico", "usa", "united states"]
+        countries = [
+            "ireland",
+            "uk",
+            "canada",
+            "denmark",
+            "mexico",
+            "norway",
+            "usa",
+            "united states",
+        ]
 
         if any(k in text for k in contact_keywords) and any(c in text for c in countries):
             session["stage"] = "offer_official_org_lookup"
